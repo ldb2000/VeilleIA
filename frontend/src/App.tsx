@@ -113,6 +113,15 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      document.body.style.setProperty('--mouse-x', `${event.clientX}px`);
+      document.body.style.setProperty('--mouse-y', `${event.clientY}px`);
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, []);
+
   const fetchReports = async () => {
     try {
       const data = await getReports();
@@ -647,7 +656,7 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-brand">
-          <Bot size={28} color="#2563eb" />
+          <Bot size={28} color="#06b6d4" />
           <div>
             <strong>Veille IA Technique</strong>
             <span>Espace de veille opérationnelle</span>
