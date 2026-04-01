@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+sqlalchemy
+google-generativeai
+google-auth-oauthlib
+pydantic-settings
+python-dotenv
+reportlab
+markdown
+python-multipart
+pytest
+httpx
