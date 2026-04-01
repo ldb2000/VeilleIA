@@ -373,6 +373,7 @@ button.danger:hover {
 
 .report-item-actions {
   position: relative;
+  z-index: 6;
 }
 
 .report-item-menu {
@@ -388,7 +389,7 @@ button.danger:hover {
   border-radius: 4px;
   background: var(--bg-secondary);
   box-shadow: 0 0 20px var(--glow-blue);
-  z-index: 5;
+  z-index: 50;
 }
 
 .report-item-menu button {
@@ -440,6 +441,25 @@ button.danger:hover {
 .report-notes-header h3,
 .searches-header h2 {
   margin: 0;
+}
+
+.summary-card-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+
+.summary-card-toggle:hover {
+  opacity: 0.85;
+}
+
+.summary-chevron {
+  margin-left: auto;
+  transition: transform 0.2s ease;
+  color: var(--text-secondary);
+}
+
+.summary-chevron.collapsed {
+  transform: rotate(-90deg);
 }
 
 .summary-card-header svg {

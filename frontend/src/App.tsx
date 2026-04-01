@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import {
   Bot,
   ChartColumn,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -84,6 +85,8 @@ function App() {
   const [chatInput, setChatInput] = useState('');
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<number | null>(null);
+  const [summaryReadIds, setSummaryReadIds] = useState<Set<number>>(new Set());
+  const [summaryExpanded, setSummaryExpanded] = useState(true);
   const markdownRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -97,6 +100,7 @@ function App() {
       return;
     }
     loadSummary(selectedReport.id);
+    setSummaryExpanded(!summaryReadIds.has(selectedReport.id));
   }, [selectedReport]);
 
   useEffect(() => {
@@ -159,6 +163,7 @@ function App() {
     try {
       const result = await getReportSummary(reportId);
       setSummaryByReportId((current) => ({ ...current, [reportId]: result.summary }));
+      setSummaryReadIds((current) => new Set(current).add(reportId));
     } catch {
       setSummaryByReportId((current) => {
         if (!(reportId in current)) {
@@ -217,6 +222,7 @@ function App() {
     try {
       const result = await generateReportSummary(selectedReport.id);
       setSummaryByReportId((current) => ({ ...current, [selectedReport.id]: result.summary }));
+      setSummaryExpanded(true);
     } catch (error) {
       console.error('Erreur lors de la génération du résumé :', error);
       alert('Impossible de générer le résumé exécutif.');
@@ -234,7 +240,9 @@ function App() {
       source_text: sourceText,
       content,
     });
-    setNotes((current) => [newNote, ...current]);
+    setNotes((current) =>
+      current.some((note) => note.id === newNote.id) ? current : [newNote, ...current],
+    );
   };
 
   const handleAddSelectionToNotes = async () => {
@@ -461,13 +469,22 @@ function App() {
             </div>
             {selectedSummary && (
               <section className="summary-card">
-                <div className="summary-card-header">
+                <div
+                  className="summary-card-header summary-card-toggle"
+                  onClick={() => setSummaryExpanded((current) => !current)}
+                >
                   <Sparkles size={18} />
                   <h3>Résumé exécutif</h3>
+                  <ChevronDown
+                    size={16}
+                    className={`summary-chevron ${summaryExpanded ? '' : 'collapsed'}`}
+                  />
                 </div>
-                <div className="summary-card-body">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedSummary}</ReactMarkdown>
-                </div>
+                {summaryExpanded && (
+                  <div className="summary-card-body">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedSummary}</ReactMarkdown>
+                  </div>
+                )}
               </section>
             )}
             <div className="markdown-body" ref={markdownRef} onContextMenu={handleMarkdownContextMenu}>
@@ -486,7 +503,9 @@ function App() {
                         <span>{note.kind === 'detail' ? 'Détail' : 'Note'}</span>
                         <span>{formatReportTimestamp(note.created_at)}</span>
                       </div>
-                      <p className="note-card-source">{note.source_text}</p>
+                      {note.source_text !== note.content && (
+                        <p className="note-card-source">{note.source_text}</p>
+                      )}
                       <div className="note-card-content">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown>
                       </div>
@@ -589,7 +608,9 @@ function App() {
               >
                 Rapport : {reports.find((item) => item.id === note.report_id)?.date ?? 'inconnu'}
               </button>
-              <p className="note-card-source">{note.source_text}</p>
+              {note.source_text !== note.content && (
+                <p className="note-card-source">{note.source_text}</p>
+              )}
               <div className="note-card-content">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown>
               </div>
