@@ -7,11 +7,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from html import escape
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, Response
+from fastapi import FastAPI, Depends, HTTPException, Response, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import inspect, text
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 from io import BytesIO
 
@@ -355,10 +356,12 @@ def generate_gemini_content(prompt: str):
 
 app = FastAPI(title="AI Watch API")
 
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -369,6 +372,18 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+API_TOKEN = os.getenv("API_TOKEN")
+security = HTTPBearer(auto_error=False)
+
+
+def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)):
+    if not API_TOKEN:
+        return
+    if not credentials or credentials.credentials != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
+
 
 TECHNICAL_PROMPT = """Recherche les nouveautés IA publiées dans les dernières 24h dans les catégories suivantes :
 
@@ -705,12 +720,12 @@ def build_pdf_story(content: str, report_date: str):
     return elements
 
 @app.get("/reports", response_model=List[schemas.Report])
-def read_reports(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+def read_reports(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), _=Depends(verify_token)):
     reports = db.query(models.Report).order_by(models.Report.created_at.desc()).offset(skip).limit(limit).all()
     return reports
 
 @app.get("/reports/{report_id}", response_model=schemas.Report)
-def read_report(report_id: int, db: Session = Depends(get_db)):
+def read_report(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
     db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -718,7 +733,7 @@ def read_report(report_id: int, db: Session = Depends(get_db)):
 
 
 @app.delete("/reports/{report_id}", status_code=204)
-def delete_report(report_id: int, db: Session = Depends(get_db)):
+def delete_report(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
     db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -730,7 +745,7 @@ def delete_report(report_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/reports/{report_id}/summary", response_model=schemas.ReportSummaryResponse)
-def get_report_summary(report_id: int, db: Session = Depends(get_db)):
+def get_report_summary(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
     db_summary = db.query(models.ReportSummary).filter(models.ReportSummary.report_id == report_id).first()
     if db_summary is None:
         raise HTTPException(status_code=404, detail="Summary not found")
@@ -742,7 +757,7 @@ def get_report_summary(report_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/reports/{report_id}/summary", response_model=schemas.ReportSummaryResponse)
-def summarize_report(report_id: int, db: Session = Depends(get_db)):
+def summarize_report(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
     db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -788,7 +803,7 @@ Rapport :
 
 
 @app.post("/reports/{report_id}/detail")
-def expand_report_selection(report_id: int, selected_text: str, db: Session = Depends(get_db)):
+def expand_report_selection(report_id: int, selected_text: str, db: Session = Depends(get_db), _=Depends(verify_token)):
     db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -822,12 +837,12 @@ Rapport complet :
 
 
 @app.get("/notes", response_model=List[schemas.Note])
-def read_notes(db: Session = Depends(get_db)):
+def read_notes(db: Session = Depends(get_db), _=Depends(verify_token)):
     return db.query(models.Note).order_by(models.Note.created_at.desc()).all()
 
 
 @app.post("/reports/{report_id}/notes", response_model=schemas.Note)
-def create_note(report_id: int, payload: schemas.NoteCreate, db: Session = Depends(get_db)):
+def create_note(report_id: int, payload: schemas.NoteCreate, db: Session = Depends(get_db), _=Depends(verify_token)):
     db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -845,7 +860,7 @@ def create_note(report_id: int, payload: schemas.NoteCreate, db: Session = Depen
 
 
 @app.delete("/notes/{note_id}", status_code=204)
-def delete_note(note_id: int, db: Session = Depends(get_db)):
+def delete_note(note_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
     db_note = db.query(models.Note).filter(models.Note.id == note_id).first()
     if db_note is None:
         raise HTTPException(status_code=404, detail="Note not found")
@@ -855,7 +870,7 @@ def delete_note(note_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/chat/messages", response_model=List[schemas.ChatMessage])
-def get_chat_messages(db: Session = Depends(get_db)):
+def get_chat_messages(db: Session = Depends(get_db), _=Depends(verify_token)):
     messages = db.query(models.ChatMessage).order_by(models.ChatMessage.created_at.asc()).all()
     return [
         {
@@ -870,7 +885,7 @@ def get_chat_messages(db: Session = Depends(get_db)):
 
 
 @app.post("/chat", response_model=schemas.ChatResponse)
-def chat_with_reports(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
+def chat_with_reports(payload: schemas.ChatRequest, db: Session = Depends(get_db), _=Depends(verify_token)):
     question = payload.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
@@ -932,7 +947,7 @@ Rapports de contexte :
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/reports/trigger", response_model=schemas.Report)
-async def trigger_report(db: Session = Depends(get_db)):
+async def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token)):
     try:
         load_gemini_auth()
         backend_kind = "cli" if should_use_gemini_cli_backend() else "sdk"
@@ -961,41 +976,8 @@ async def trigger_report(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/debug/gemini")
-def debug_gemini():
-    debug_info = get_auth_debug_info()
-    prompt = "Reply with exactly: OK"
-
-    try:
-        load_gemini_auth()
-        backend_kind = "cli" if should_use_gemini_cli_backend() else "sdk"
-        active_model = resolve_cli_model_name() if backend_kind == "cli" else DEFAULT_GEMINI_MODEL
-        print(
-            f"Sending debug request to Gemini backend={backend_kind} model={active_model} "
-            f"timeout={DEFAULT_GEMINI_TIMEOUT_SECONDS}s"
-        )
-        start = time.perf_counter()
-        response = generate_gemini_content(prompt)
-        elapsed = time.perf_counter() - start
-        text = response if isinstance(response, str) else getattr(response, "text", None)
-        return {
-            "ok": True,
-            "backend": backend_kind,
-            "elapsed_seconds": round(elapsed, 2),
-            "response_text": text,
-            "auth": debug_info,
-        }
-    except Exception as e:
-        return {
-            "ok": False,
-            "backend": "cli" if should_use_gemini_cli_backend() else "sdk",
-            "error_type": type(e).__name__,
-            "error": str(e),
-            "auth": debug_info,
-        }
-
 @app.get("/reports/{report_id}/pdf")
-def get_report_pdf(report_id: int, db: Session = Depends(get_db)):
+def get_report_pdf(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
     db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
