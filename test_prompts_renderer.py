@@ -1,4 +1,7 @@
+import inspect
+
 from app.main import append_markdown_pdf_elements, build_pdf_styles, TECHNICAL_PROMPT, CODIR_NOTE_PROMPT
+from app.main import summarize_report
 
 
 def test_technical_prompt_uses_decision_first_structure():
@@ -52,3 +55,13 @@ def test_codir_prompt_keeps_format_placeholder():
 
 def test_codir_prompt_references_new_section_name():
     assert "Signaux faibles" in CODIR_NOTE_PROMPT
+
+
+def test_summary_prompt_is_decision_first():
+    src = inspect.getsource(summarize_report)
+    # toujours présents
+    assert "Décision suggérée" in src
+    assert "5 points maximum" in src
+    # nouvelle logique
+    assert "TL;DR" in src
+    assert "radar décisionnel" in src.lower()

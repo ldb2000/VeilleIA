@@ -1047,16 +1047,16 @@ def summarize_report(report_id: int, db: Session = Depends(get_db), _=Depends(ve
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    summary_prompt = f"""Tu reçois un rapport de veille déjà rédigé.
+    summary_prompt = f"""Tu reçois un rapport de veille IA déjà rédigé, structuré « décision d'abord » (TL;DR, radar décisionnel, nouveautés détaillées, signaux faibles).
 
 Ta tâche : produire un executive summary court, sans refaire de recherche.
 
 Contraintes :
 - utilise uniquement le contenu fourni ci-dessous
 - pas de nouvelles affirmations externes
+- appuie-toi en priorité sur le TL;DR et le radar décisionnel du rapport
 - 5 points maximum
-- ton très concret
-- orienté architecture / plateforme / sécurité / delivery
+- ton très concret, orienté architecture / plateforme / sécurité / delivery
 - termine par une ligne `Décision suggérée : ...`
 
 Rapport :
@@ -1098,7 +1098,7 @@ def expand_report_selection(
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    detail_prompt = f"""Tu reçois un rapport de veille déjà rédigé et un extrait sélectionné par l'utilisateur.
+    detail_prompt = f"""Tu reçois un rapport de veille IA déjà rédigé (structuré « décision d'abord ») et un extrait sélectionné par l'utilisateur.
 
 Ta tâche : expliquer plus en détail cet extrait, sans refaire de recherche.
 
@@ -1137,7 +1137,7 @@ def define_report_selection(
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    definition_prompt = f"""Tu reçois un rapport de veille IA déjà rédigé et un terme ou extrait sélectionné par l'utilisateur.
+    definition_prompt = f"""Tu reçois un rapport de veille IA déjà rédigé (structuré « décision d'abord ») et un terme ou extrait sélectionné par l'utilisateur.
 
 Ta tâche : produire une définition courte, utile et exploitable qui pourra être ajoutée en fin de document.
 
