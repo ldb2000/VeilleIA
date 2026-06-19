@@ -10,3 +10,4 @@ markdown
 python-multipart
 pytest
 httpx
+python-docx

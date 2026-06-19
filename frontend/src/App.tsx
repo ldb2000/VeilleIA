@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Download,
   FileText,
+  MessageSquareShare,
   MoreVertical,
   NotebookPen,
   RefreshCw,
@@ -21,10 +22,13 @@ import {
   createNote,
   deleteReport,
   deleteNote,
+  downloadReportPdf,
+  downloadReportDocx,
   generateReportSummary,
+  generateCodirNote,
   getChatMessages,
+  getReportDefinition,
   getReportDetail,
-  getReportPdfUrl,
   getReports,
   getReportSummary,
   getNotes,
@@ -40,6 +44,17 @@ type ContextMenuState = {
 } | null;
 
 type MainView = 'dashboard' | 'reports' | 'notes' | 'searches';
+
+type ProjectSynthesisCacheEntry = {
+  project: string;
+  content: string;
+  generatedAt: number;
+};
+
+const PROJECT_SYNTHESIS_CACHE_KEY = 'veilleia.projectSynthesis.v1';
+const PROJECT_SYNTHESIS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const TEAMS_SHARE_URL =
+  'https://teams.microsoft.com/l/chat/19:f5f9775520064c0a932a3a93567c0c6b@thread.v2/conversations?context=%7B%22contextType%22%3A%22chat%22%7D';
 
 const NAV_ITEMS: Array<{ id: MainView; label: string; icon: typeof ChartColumn }> = [
   { id: 'dashboard', label: 'Tableau de bord', icon: ChartColumn },
@@ -70,6 +85,23 @@ const KNOWN_PROJECTS = [
   'vLLM',
 ];
 
+const readProjectSynthesisCache = (): Record<string, ProjectSynthesisCacheEntry> => {
+  try {
+    const raw = window.localStorage.getItem(PROJECT_SYNTHESIS_CACHE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeProjectSynthesisCache = (cache: Record<string, ProjectSynthesisCacheEntry>) => {
+  window.localStorage.setItem(PROJECT_SYNTHESIS_CACHE_KEY, JSON.stringify(cache));
+};
+
 function App() {
   const [reports, setReports] = useState<Report[]>([]);
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
@@ -77,12 +109,16 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [definitionLoading, setDefinitionLoading] = useState(false);
+  const [codirLoading, setCodirLoading] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
   const [summaryByReportId, setSummaryByReportId] = useState<Record<number, string>>({});
   const [notes, setNotes] = useState<Note[]>([]);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
+  const [projectSynthesis, setProjectSynthesis] = useState<{ project: string; content: string } | null>(null);
+  const [projectSynthesisLoading, setProjectSynthesisLoading] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<number | null>(null);
   const [summaryReadIds, setSummaryReadIds] = useState<Set<number>>(new Set());
@@ -191,8 +227,47 @@ function App() {
     }
   };
 
-  const handleDownload = (id: number) => {
-    window.open(getReportPdfUrl(id), '_blank');
+  const handleDownload = async (id: number) => {
+    try {
+      const pdf = await downloadReportPdf(id);
+      const url = URL.createObjectURL(pdf);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `ai_watch_${selectedReport?.date ?? id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Erreur lors de l’export PDF :', error);
+      alert('Impossible d’exporter le PDF.');
+    }
+  };
+
+  const handleDownloadDocx = async (report: Report) => {
+    try {
+      const docx = await downloadReportDocx(report.id);
+      const url = URL.createObjectURL(docx);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `note_codir_veille_ia_${report.date}.docx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Erreur lors de l’export Word :', error);
+      alert('Impossible d’exporter la note CODIR.');
+    }
+  };
+
+  const handleShareTeams = async (report: Report) => {
+    if (report.report_type === 'codir_note') {
+      await handleDownloadDocx(report);
+    } else {
+      await handleDownload(report.id);
+    }
+    window.open(TEAMS_SHARE_URL, '_blank', 'noopener,noreferrer');
   };
 
   const handleDeleteReport = async (report: Report) => {
@@ -231,7 +306,25 @@ function App() {
     }
   };
 
-  const appendNote = async (kind: 'note' | 'detail', sourceText: string, content: string) => {
+  const handleGenerateCodirNote = async () => {
+    if (!selectedReport || selectedReport.report_type === 'codir_note') {
+      return;
+    }
+    setCodirLoading(true);
+    try {
+      const newReport = await generateCodirNote(selectedReport.id);
+      setReports((current) => [newReport, ...current]);
+      setSelectedReport(newReport);
+      setCurrentView('reports');
+    } catch (error) {
+      console.error('Erreur lors de la génération de la note CODIR :', error);
+      alert('Impossible de générer la note CODIR.');
+    } finally {
+      setCodirLoading(false);
+    }
+  };
+
+  const appendNote = async (kind: 'note' | 'detail' | 'definition', sourceText: string, content: string) => {
     if (!selectedReport) {
       return;
     }
@@ -274,6 +367,24 @@ function App() {
       alert('Impossible de générer un détail pour cette sélection.');
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  const handleDefineSelection = async () => {
+    if (!selectedReport || !contextMenu?.text) {
+      return;
+    }
+    setDefinitionLoading(true);
+    try {
+      const result = await getReportDefinition(selectedReport.id, contextMenu.text);
+      await appendNote('definition', contextMenu.text, result.definition);
+      window.getSelection()?.removeAllRanges();
+      setContextMenu(null);
+    } catch (error) {
+      console.error('Erreur lors de la génération de la définition :', error);
+      alert('Impossible de générer une définition pour cette sélection.');
+    } finally {
+      setDefinitionLoading(false);
     }
   };
 
@@ -338,6 +449,45 @@ function App() {
     }
   };
 
+  const handleProjectSynthesis = async (project: string) => {
+    const cacheKey = project.toLowerCase();
+    const cache = readProjectSynthesisCache();
+    const cached = cache[cacheKey];
+    if (cached && Date.now() - cached.generatedAt < PROJECT_SYNTHESIS_MAX_AGE_MS) {
+      setProjectSynthesis(cached);
+      return;
+    }
+
+    const reportIds = reports
+      .filter((report) => report.content.toLowerCase().includes(project.toLowerCase()))
+      .slice(0, 3)
+      .map((report) => report.id);
+
+    if (reportIds.length === 0) {
+      return;
+    }
+
+    setProjectSynthesisLoading(project);
+    try {
+      const result = await chatWithReports(
+        `Fais une synthèse courte sur ${project} à partir des rapports fournis. Réponds en 4 points maximum : nouveauté, intérêt pour APRIL, risque ou limite, action recommandée.`,
+        reportIds,
+      );
+      const nextSynthesis = { project, content: result.answer, generatedAt: Date.now() };
+      setProjectSynthesis(nextSynthesis);
+      writeProjectSynthesisCache({
+        ...cache,
+        [cacheKey]: nextSynthesis,
+      });
+      await fetchChatHistory();
+    } catch (error) {
+      console.error('Erreur lors de la synthèse projet :', error);
+      alert('Impossible de générer la synthèse du projet.');
+    } finally {
+      setProjectSynthesisLoading(null);
+    }
+  };
+
   const formatReportTimestamp = (value: string) =>
     new Date(value).toLocaleString('fr-FR', {
       year: 'numeric',
@@ -354,6 +504,19 @@ function App() {
       month: 'long',
       day: 'numeric',
     });
+
+  const getReportTitle = (report: Report) =>
+    report.report_type === 'codir_note' ? 'Note CODIR' : 'Analyse technique';
+
+  const getNoteKindLabel = (kind: string) => {
+    if (kind === 'detail') {
+      return 'Détail';
+    }
+    if (kind === 'definition') {
+      return 'Définition';
+    }
+    return 'Note';
+  };
 
   const groupedReports = reports.reduce<Record<string, Report[]>>((acc, report) => {
     const key = new Date(report.created_at).toISOString().slice(0, 10);
@@ -403,14 +566,16 @@ function App() {
               {dayReports.map((report) => (
                 <div
                   key={report.id}
-                  className={`report-item ${selectedReport?.id === report.id ? 'active' : ''}`}
+                  className={`report-item ${selectedReport?.id === report.id ? 'active' : ''} ${
+                    openActionMenuId === report.id ? 'menu-open' : ''
+                  }`}
                   onClick={() => setSelectedReport(report)}
                 >
                   <div className="report-item-content">
                     <div className="report-item-main">
                       <FileText size={16} />
                       <div className="report-item-text">
-                        <span className="report-item-title">Analyse technique</span>
+                        <span className="report-item-title">{getReportTitle(report)}</span>
                         <span className="report-item-meta">{formatReportTimestamp(report.created_at)}</span>
                       </div>
                     </div>
@@ -429,6 +594,16 @@ function App() {
                           <button onClick={() => handleDownload(report.id)}>
                             <Download size={16} />
                             Exporter en PDF
+                          </button>
+                          {report.report_type === 'codir_note' && (
+                            <button onClick={() => handleDownloadDocx(report)}>
+                              <Download size={16} />
+                              Exporter en Word
+                            </button>
+                          )}
+                          <button onClick={() => handleShareTeams(report)}>
+                            <MessageSquareShare size={16} />
+                            Partager Teams
                           </button>
                           <button onClick={() => handleDeleteReport(report)} className="danger">
                             <Trash2 size={16} />
@@ -459,11 +634,29 @@ function App() {
         {selectedReport ? (
           <>
             <div className="actions">
-              <h2>Analyse technique : {selectedReport.date}</h2>
+              <h2>{getReportTitle(selectedReport)} : {selectedReport.date}</h2>
               <div className="action-buttons">
-                <button onClick={handleGenerateSummary} disabled={summaryLoading}>
-                  <Sparkles size={18} />
-                  {summaryLoading ? 'Génération du résumé...' : 'Résumé exécutif'}
+                {selectedReport.report_type !== 'codir_note' && (
+                  <>
+                    <button onClick={handleGenerateSummary} disabled={summaryLoading}>
+                      <Sparkles size={18} />
+                      {summaryLoading ? 'Génération du résumé...' : 'Résumé exécutif'}
+                    </button>
+                    <button onClick={handleGenerateCodirNote} disabled={codirLoading}>
+                      <FileText size={18} />
+                      {codirLoading ? 'Génération CODIR...' : 'Note CODIR'}
+                    </button>
+                  </>
+                )}
+                {selectedReport.report_type === 'codir_note' && (
+                  <button onClick={() => handleDownloadDocx(selectedReport)}>
+                    <Download size={18} />
+                    Exporter Word
+                  </button>
+                )}
+                <button onClick={() => handleShareTeams(selectedReport)}>
+                  <MessageSquareShare size={18} />
+                  Partager Teams
                 </button>
               </div>
             </div>
@@ -500,7 +693,7 @@ function App() {
                   {selectedNotes.map((note) => (
                     <div key={note.id} className="note-card">
                       <div className="note-card-meta">
-                        <span>{note.kind === 'detail' ? 'Détail' : 'Note'}</span>
+                        <span>{getNoteKindLabel(note.kind)}</span>
                         <span>{formatReportTimestamp(note.created_at)}</span>
                       </div>
                       {note.source_text !== note.content && (
@@ -517,7 +710,7 @@ function App() {
                 </div>
               ) : (
                 <p className="notes-empty">
-                  Fais un clic droit sur une sélection dans le rapport pour l’ajouter aux notes ou demander un détail.
+                  Fais un clic droit sur une sélection dans le rapport pour l’ajouter aux notes, demander un détail ou une définition.
                 </p>
               )}
             </section>
@@ -556,13 +749,29 @@ function App() {
         <section className="dashboard-panel">
           <h3>Projets innovants mentionnés</h3>
           {innovativeProjects.length > 0 ? (
-            <div className="tag-cloud">
-              {innovativeProjects.map((project) => (
-                <span key={project} className="project-tag">
-                  {project}
-                </span>
-              ))}
-            </div>
+            <>
+              <div className="tag-cloud">
+                {innovativeProjects.map((project) => (
+                  <button
+                    key={project}
+                    className={`project-tag ${projectSynthesis?.project === project ? 'active' : ''}`}
+                    onClick={() => handleProjectSynthesis(project)}
+                    disabled={projectSynthesisLoading !== null}
+                  >
+                    {projectSynthesisLoading === project ? 'Synthèse...' : project}
+                  </button>
+                ))}
+              </div>
+              {projectSynthesis && (
+                <div className="project-synthesis">
+                  <div className="project-synthesis-header">
+                    <span>Synthèse</span>
+                    <strong>{projectSynthesis.project}</strong>
+                  </div>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{projectSynthesis.content}</ReactMarkdown>
+                </div>
+              )}
+            </>
           ) : (
             <p className="notes-empty">Aucun projet suivi détecté pour l’instant.</p>
           )}
@@ -571,7 +780,7 @@ function App() {
           <h3>Dernier rapport</h3>
           {selectedReport ? (
             <>
-              <p className="dashboard-latest-title">Analyse technique</p>
+              <p className="dashboard-latest-title">{getReportTitle(selectedReport)}</p>
               <p className="dashboard-latest-meta">{formatReportTimestamp(selectedReport.created_at)}</p>
               <button onClick={() => setCurrentView('reports')} className="dashboard-link-button">
                 Ouvrir le rapport
@@ -593,7 +802,7 @@ function App() {
           {notes.map((note) => (
             <div key={note.id} className="note-card">
               <div className="note-card-meta">
-                <span>{note.kind === 'detail' ? 'Détail' : 'Note'}</span>
+                <span>{getNoteKindLabel(note.kind)}</span>
                 <span>{formatReportTimestamp(note.created_at)}</span>
               </div>
               <button
@@ -728,6 +937,10 @@ function App() {
           <button onClick={handleExplainSelection} disabled={detailLoading}>
             <Sparkles size={16} />
             {detailLoading ? 'Génération du détail...' : 'Détail'}
+          </button>
+          <button onClick={handleDefineSelection} disabled={definitionLoading}>
+            <FileText size={16} />
+            {definitionLoading ? 'Génération...' : 'Définition'}
           </button>
         </div>
       )}

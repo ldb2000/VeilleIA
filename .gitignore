@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .env
 sql_app.db
+test_app.db

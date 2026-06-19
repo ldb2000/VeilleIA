@@ -27,6 +27,14 @@ class ChatResponse(BaseModel):
     answer: str
 
 
+class ReportDetailResponse(BaseModel):
+    detail: str
+
+
+class ReportDefinitionResponse(BaseModel):
+    definition: str
+
+
 class ReportSummaryResponse(BaseModel):
     report_id: int
     summary: str
