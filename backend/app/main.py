@@ -809,6 +809,11 @@ def append_markdown_pdf_elements(elements, content: str, styles) -> None:
             index += 1
             continue
 
+        if stripped.startswith("### "):
+            elements.append(Paragraph(pdf_text(stripped[4:]), styles["WatchH3"]))
+            index += 1
+            continue
+
         if stripped.startswith("## "):
             elements.append(Paragraph(pdf_text(stripped[3:]), styles["WatchH2"]))
             index += 1
