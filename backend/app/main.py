@@ -391,126 +391,68 @@ def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Security(
         raise HTTPException(status_code=401, detail="Invalid or missing token")
 
 
-TECHNICAL_PROMPT = """Recherche les nouveautés IA publiées dans les dernières 24h dans les catégories suivantes :
+TECHNICAL_PROMPT = """Tu produis une veille technique IA quotidienne couvrant les nouveautés publiées dans les dernières 24h.
 
-## 1. Labs / model providers
-OpenAI, Anthropic, Google, Meta, Mistral, Microsoft, AWS, xAI, Cohere, NVIDIA
+# Périmètre de recherche
 
-## 2. AI coding / vibe coding / dev agents / open source tools
-OpenClaw, Paperclip, Cline, Continue, Aider, Void, OpenHands, OpenCode, Roo Code, Bolt.new, Codeium, Windsurf, Cursor, Claude Code, Gemini CLI, aider-like tools, terminal coding agents, self-hosted coding assistants
+## Labs / model providers
+OpenAI, Anthropic, Google, Meta, Mistral, Microsoft, AWS, xAI, Cohere, NVIDIA, DeepSeek, Alibaba (Qwen), et tout autre lab publiant un modèle marquant — y compris les modèles open-weight.
 
-## 3. Écosystème connexe à surveiller
-- MCP (Model Context Protocol)
-- tool use / function calling
-- browse / search / computer use
-- coding agents
-- IDE plugins
-- VS Code / JetBrains AI plugins
-- local-first AI tools
-- self-hosted AI assistants
-- Ollama ecosystem
-- OpenRouter ecosystem
-- agent orchestration frameworks
-- sandboxing / permissions / security for agents
-- memory / long context / retrieval for agents
+## AI coding / vibe coding / agents dev / open source
+Cursor, Claude Code, Gemini CLI, Windsurf, Codeium, Cline, Continue, Aider, OpenHands, OpenCode, Roo Code, Bolt.new, Void, et tout outil coding/agent émergent (CLI, plugin IDE, agent de terminal, assistant self-hosted) qui monte vite, même immature.
 
-Objectif :
-Je veux une veille technique utile pour un profil architecture / plateforme / infra / sécurité / développement.
-Je veux détecter rapidement les sorties réellement importantes, y compris les outils open source émergents qui peuvent changer les usages de développement, de prototypage ou de "vibe coding".
+## Écosystème connexe
+MCP (Model Context Protocol), tool use / function calling, browse / search / computer use, plugins VS Code / JetBrains, local-first, self-hosted, Ollama, OpenRouter, frameworks d’orchestration d’agents, sandboxing / permissions / sécurité des agents, mémoire / long context / retrieval.
 
-Consignes strictes :
-- Ignore le bruit marketing autant que possible
-- Priorise les sources officielles, changelogs, documentation, releases GitHub, notes de version, billets engineering
-- Utilise les médias généralistes seulement en source secondaire
-- Sépare clairement les faits confirmés des suppositions ou annonces vagues
-- Ne retiens que les informations ayant un impact technique réel
-- Si une annonce est purement marketing sans impact concret, indique-le brièvement puis écarte-la
-- Mets en avant les nouveautés réellement disponibles, pas seulement annoncées
-- Quand un projet open source monte vite, signale-le même s’il est encore immature
-- Indique explicitement quand quelque chose est : prototype / alpha / bêta / GA / production-ready / expérimental
+## Recherche
+Publications de recherche marquantes (arXiv, blogs engineering des labs) ayant un impact pratique, pas seulement les releases produit.
 
-Analyse uniquement :
-- nouveaux modèles
-- nouvelles capacités des modèles
-- changements d’API
-- changements SDK / CLI / plugins
-- tool use / search / browse / computer use
-- support MCP / connecteurs / plugins
-- multimodalité utile
-- mémoire / long context / retrieval
-- agents / orchestration / planification / exécution
-- self-hosting / local-first / BYOK
-- compatibilité OpenAI / Anthropic / Gemini / OpenRouter / Ollama / Azure OpenAI / modèles locaux
-- sécurité / sandbox / permissions / secrets / isolation
-- pricing uniquement si l’impact technique ou d’architecture est structurant
-- breaking changes / migrations / dépréciations
-- disponibilité réelle
-- niveau de maturité réel
-- cas d’usage concrets pour équipes techniques
+# Objectif
+Veille utile pour un profil architecture / plateforme / infra / sécurité / développement. Détecter vite les sorties réellement importantes, y compris l’open source émergent qui change les usages de développement, de prototypage ou de « vibe coding ».
 
-Format obligatoire :
+# Consignes anti-bruit (strictes)
+- Priorise les sources officielles : changelogs, documentation, releases GitHub, notes de version, billets engineering. Médias généralistes en source secondaire seulement.
+- Sépare clairement les faits confirmés des suppositions ou annonces vagues.
+- Ne retiens que ce qui a un impact technique réel et une disponibilité réelle (pas seulement annoncé).
+- Ce qui est purement marketing : écarte-le en une seule ligne, ne le développe jamais.
+- Indique toujours le niveau de maturité réel : prototype / alpha / bêta / GA / production-ready / expérimental.
+- Mieux vaut 4 items solides que 12 dilués : le nombre d’items s’adapte à l’actualité du jour, sans plafond fixe.
 
-## 1. Nouveautés majeures
-- 10 éléments maximum
-- pour chaque élément :
-  - ce qui sort
-  - pourquoi c’est important techniquement
-  - pour qui c’est utile
-  - niveau de maturité
-  - action recommandée
+# Ancrage April (quand c’est pertinent)
+Quand une nouveauté touche notre stack (Dagster, Snowflake, Azure, M365) ou un cas d’usage assurance, relie-la explicitement. Ne force pas ce lien quand il n’existe pas.
 
-## 2. Détail par catégorie
+# Format de sortie obligatoire
+N’utilise que ce sous-ensemble markdown : titres `## ` et `### `, puces `- `, tableaux `|`. Pas de listes imbriquées, pas de `####`, pas de blocs de code.
 
-### A. Labs / modèles
-Pour chaque acteur concerné :
-- nouveautés confirmées
-- ce que cela change techniquement
-- impacts pour dev / plateforme / infra / sécurité
-- disponibilité réelle
-- niveau de maturité
-- action recommandée
+## TL;DR
+- 3 puces maximum : l’essentiel du jour, formulé pour décider vite.
 
-### B. Outils AI coding / vibe coding / open source
-Pour chaque outil concerné :
-- nouveauté confirmée
-- type d’outil (IDE, plugin, CLI, agent, orchestration, framework, self-hosted app)
-- ce que cela change concrètement
-- compatibilité modèles / providers
-- mode de déploiement (cloud, local, self-hosted, hybride)
-- risques / limites / sécurité
-- niveau de maturité
-- action recommandée
+## Radar décisionnel
 
-### C. Écosystème agents / MCP / tooling
-- nouveautés confirmées
-- connecteurs ou protocoles importants
-- implications architecture / sécurité / gouvernance
-- niveau de maturité
-- action recommandée
+### À tester maintenant
+- ce qui est dispo et mérite un essai immédiat (1 ligne par item)
 
-## 3. Tableau de synthèse
-Colonnes :
-- catégorie
-- acteur / outil
-- nouveauté
-- type
-- impact technique
-- maturité
-- disponibilité
-- action
+### À surveiller
+- ce qui n’est pas encore mûr mais potentiellement structurant
 
-## 4. À surveiller
-- signaux faibles
-- projets émergents
+### À ignorer
+- ce qui est du bruit / marketing, écarté en une ligne avec la raison
+
+## Nouveautés détaillées
+Trie les items par impact réel (pas par catégorie). Un `### ` par nouveauté, puis des puces plates :
+
+### <Titre court de la nouveauté>
+- Ce qui sort
+- Pourquoi c’est important techniquement
+- Pour qui / impact architecture - plateforme - sécurité
+- Maturité (prototype / alpha / bêta / GA / production-ready)
+- Ancrage April (lien stack Dagster / Snowflake / Azure / M365 ou cas assurance, si pertinent)
+- Action recommandée
+
+## Signaux faibles & recherche
 - repos GitHub qui montent vite
-- nouveautés encore immatures mais potentiellement structurantes
+- publications de recherche / blogs engineering marquants (avec l’apport pratique)
 - sujets à recontrôler dans les prochains jours
-
-## 5. Filtre décisionnel
-Termine par 3 sections courtes :
-- À tester tout de suite
-- À surveiller
-- À ignorer pour l’instant
 """
 
 

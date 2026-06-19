@@ -1,4 +1,28 @@
-from app.main import append_markdown_pdf_elements, build_pdf_styles
+from app.main import append_markdown_pdf_elements, build_pdf_styles, TECHNICAL_PROMPT
+
+
+def test_technical_prompt_uses_decision_first_structure():
+    for section in [
+        "## TL;DR",
+        "## Radar décisionnel",
+        "### À tester maintenant",
+        "### À surveiller",
+        "### À ignorer",
+        "## Nouveautés détaillées",
+        "## Signaux faibles & recherche",
+    ]:
+        assert section in TECHNICAL_PROMPT, f"section manquante: {section}"
+
+
+def test_technical_prompt_drops_legacy_sections():
+    for legacy in [
+        "## 2. Détail par catégorie",
+        "### A. Labs / modèles",
+        "## 3. Tableau de synthèse",
+        "## 5. Filtre décisionnel",
+        "10 éléments maximum",
+    ]:
+        assert legacy not in TECHNICAL_PROMPT, f"section legacy encore présente: {legacy}"
 
 
 def test_h3_line_renders_as_watch_h3():
