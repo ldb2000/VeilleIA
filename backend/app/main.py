@@ -497,7 +497,7 @@ Word (.docx), strictement 1 page A4.
 - Tableau : en-tête bleu plein, alternance gris clair / blanc
 
 # CONTRAINTE DURE
-1 page A4 stricte. Si dépassement, sacrifier d'abord les "à surveiller", 
+1 page A4 stricte. Si dépassement, sacrifier d'abord les éléments « Signaux faibles & recherche » du rapport,
 puis raccourcir la synthèse. Jamais réduire le tableau de décisions.
 
 # FORMAT DE SORTIE

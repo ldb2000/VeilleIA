@@ -1,4 +1,4 @@
-from app.main import append_markdown_pdf_elements, build_pdf_styles, TECHNICAL_PROMPT
+from app.main import append_markdown_pdf_elements, build_pdf_styles, TECHNICAL_PROMPT, CODIR_NOTE_PROMPT
 
 
 def test_technical_prompt_uses_decision_first_structure():
@@ -43,3 +43,12 @@ def test_h2_still_renders_as_watch_h2():
     append_markdown_pdf_elements(elements, "## TL;DR", styles)
     assert elements[0].style.name == "WatchH2"
     assert "###" not in elements[0].text
+
+
+def test_codir_prompt_keeps_format_placeholder():
+    # le placeholder doit survivre pour .format(watch_document=...)
+    assert "{watch_document}" in CODIR_NOTE_PROMPT
+
+
+def test_codir_prompt_references_new_section_name():
+    assert "Signaux faibles" in CODIR_NOTE_PROMPT
