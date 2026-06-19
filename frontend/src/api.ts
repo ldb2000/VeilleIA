@@ -1,6 +1,11 @@
 import axios from 'axios';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_TOKEN = import.meta.env.VITE_API_TOKEN;
+
+if (API_TOKEN) {
+  axios.defaults.headers.common['Authorization'] = `Bearer ${API_TOKEN}`;
+}
 
 export interface Report {
   id: number;
@@ -18,6 +23,10 @@ export interface ReportSummary {
 
 export interface ReportDetail {
   detail: string;
+}
+
+export interface ReportDefinition {
+  definition: string;
 }
 
 export interface ChatAnswer {
@@ -56,6 +65,11 @@ export const triggerReport = async (): Promise<Report> => {
   return response.data;
 };
 
+export const generateCodirNote = async (id: number): Promise<Report> => {
+  const response = await axios.post(`${API_URL}/reports/${id}/codir`);
+  return response.data;
+};
+
 export const deleteReport = async (id: number): Promise<void> => {
   await axios.delete(`${API_URL}/reports/${id}`);
 };
@@ -72,6 +86,13 @@ export const generateReportSummary = async (id: number): Promise<ReportSummary> 
 
 export const getReportDetail = async (id: number, selectedText: string): Promise<ReportDetail> => {
   const response = await axios.post(`${API_URL}/reports/${id}/detail`, null, {
+    params: { selected_text: selectedText },
+  });
+  return response.data;
+};
+
+export const getReportDefinition = async (id: number, selectedText: string): Promise<ReportDefinition> => {
+  const response = await axios.post(`${API_URL}/reports/${id}/definition`, null, {
     params: { selected_text: selectedText },
   });
   return response.data;
@@ -107,6 +128,16 @@ export const deleteNote = async (noteId: number): Promise<void> => {
   await axios.delete(`${API_URL}/notes/${noteId}`);
 };
 
-export const getReportPdfUrl = (id: number): string => {
-  return `${API_URL}/reports/${id}/pdf`;
+export const downloadReportPdf = async (id: number): Promise<Blob> => {
+  const response = await axios.get(`${API_URL}/reports/${id}/pdf`, {
+    responseType: 'blob',
+  });
+  return response.data;
+};
+
+export const downloadReportDocx = async (id: number): Promise<Blob> => {
+  const response = await axios.get(`${API_URL}/reports/${id}/docx`, {
+    responseType: 'blob',
+  });
+  return response.data;
 };

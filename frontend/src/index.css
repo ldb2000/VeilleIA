@@ -1,21 +1,27 @@
 :root {
-  --bg-primary: #0a0a0f;
-  --bg-secondary: #12121a;
-  --bg-tertiary: #1a1a2e;
-  --border: rgba(59, 130, 246, 0.15);
-  --border-glow: rgba(6, 182, 212, 0.3);
-  --text-primary: #e2e8f0;
-  --text-secondary: #64748b;
-  --accent: #3b82f6;
-  --accent-cyan: #06b6d4;
-  --glow-blue: rgba(59, 130, 246, 0.4);
-  --glow-cyan: rgba(6, 182, 212, 0.3);
-  --danger: #ef4444;
-  --font: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  --bg-primary: #08090b;
+  --bg-secondary: rgba(18, 19, 23, 0.86);
+  --bg-tertiary: rgba(28, 30, 36, 0.92);
+  --surface-raised: rgba(36, 38, 45, 0.82);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-glow: rgba(255, 255, 255, 0.18);
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --accent: #f4f4f5;
+  --accent-cyan: #d4d4d8;
+  --accent-lime: #a6e85f;
+  --accent-amber: #f5c84b;
+  --accent-blue: #8ab4ff;
+  --glow-blue: rgba(255, 255, 255, 0.12);
+  --glow-cyan: rgba(255, 255, 255, 0.12);
+  --danger: #f87171;
+  --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
 
   font-family: var(--font);
   font-size: 15px;
-  line-height: 1.6;
+  line-height: 1.65;
   color: var(--text-primary);
   background: var(--bg-primary);
   font-synthesis: none;
@@ -29,43 +35,44 @@ body {
   background-color: var(--bg-primary);
   color: var(--text-primary);
   background-image:
-    linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
     radial-gradient(
-      ellipse at var(--mouse-x, 50%) var(--mouse-y, 50%),
-      rgba(6, 182, 212, 0.06) 0%,
-      transparent 60%
+      circle at 72% 24%,
+      rgba(255, 255, 255, 0.075) 0%,
+      rgba(255, 255, 255, 0.02) 24%,
+      transparent 46%
+    ),
+    radial-gradient(
+      circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+      rgba(255, 255, 255, 0.035) 0%,
+      transparent 34%
     );
-  background-size: 40px 40px, 40px 40px, 100% 100%;
+  background-size: 72px 72px, 72px 72px, 100% 100%, 100% 100%;
   background-attachment: fixed;
   min-height: 100vh;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(8, 9, 11, 0.12), rgba(8, 9, 11, 0.72));
+  pointer-events: none;
+  z-index: -1;
 }
 
 body::after {
   content: '';
   position: fixed;
-  top: 0;
-  left: 0;
+  inset: 0;
   width: 100%;
   height: 100%;
-  background: linear-gradient(
-    transparent 0%,
-    rgba(6, 182, 212, 0.03) 50%,
-    transparent 100%
-  );
-  background-size: 100% 8px;
-  animation: scanline 8s linear infinite;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+  background-size: 100% 6px;
+  opacity: 0.32;
   pointer-events: none;
   z-index: 9999;
-}
-
-@keyframes scanline {
-  0% {
-    transform: translateY(-100%);
-  }
-  100% {
-    transform: translateY(100vh);
-  }
 }
 
 #root {
@@ -83,19 +90,20 @@ h3,
 h4,
 h5,
 h6 {
-  font-family: var(--font);
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-weight: 700;
   color: var(--text-primary);
+  line-height: 1.18;
 }
 
 h1 {
   font-size: 1.8rem;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 h2 {
-  font-size: 1.3rem;
-  letter-spacing: -0.01em;
+  font-size: 1.35rem;
+  letter-spacing: 0;
 }
 
 h3 {
@@ -107,22 +115,21 @@ p {
 }
 
 a {
-  color: var(--accent-cyan);
+  color: var(--text-primary);
   text-decoration: none;
 }
 
 a:hover {
   text-decoration: underline;
-  text-shadow: 0 0 8px var(--glow-cyan);
 }
 
 code {
-  font-family: var(--font);
+  font-family: var(--font-mono);
   font-size: 0.85em;
   padding: 0.2em 0.5em;
   border-radius: 4px;
   background: var(--bg-primary);
-  color: var(--accent-cyan);
+  color: var(--text-primary);
   border: 1px solid var(--border);
 }
 
@@ -140,19 +147,19 @@ code {
 @keyframes glowPulse {
   0%,
   100% {
-    box-shadow: 0 0 8px var(--glow-cyan);
+    box-shadow: 0 0 0 1px var(--border);
   }
   50% {
-    box-shadow: 0 0 16px var(--glow-cyan), 0 0 24px rgba(6, 182, 212, 0.15);
+    box-shadow: 0 0 0 1px var(--border-glow);
   }
 }
 
 @keyframes iconGlow {
   0%,
   100% {
-    filter: drop-shadow(0 0 4px var(--glow-cyan));
+    filter: none;
   }
   50% {
-    filter: drop-shadow(0 0 10px var(--glow-cyan));
+    filter: none;
   }
 }

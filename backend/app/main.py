@@ -5,14 +5,14 @@ import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, Response, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import inspect, text
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime
 from io import BytesIO
 
@@ -53,13 +53,13 @@ def ensure_reports_schema() -> None:
 ensure_reports_schema()
 
 
-def serialize_report_ids(report_ids: list[int] | None) -> str | None:
+def serialize_report_ids(report_ids: Optional[list[int]]) -> Optional[str]:
     if not report_ids:
         return None
     return json.dumps(report_ids)
 
 
-def deserialize_report_ids(report_ids_raw: str | None) -> list[int] | None:
+def deserialize_report_ids(report_ids_raw: Optional[str]) -> Optional[list[int]]:
     if not report_ids_raw:
         return None
     try:
@@ -83,6 +83,9 @@ def build_report_chat_context(db: Session, report: models.Report) -> str:
 
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
 DEFAULT_GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "90"))
+REPORT_GEMINI_TIMEOUT_SECONDS = float(
+    os.getenv("GEMINI_REPORT_TIMEOUT_SECONDS", str(max(DEFAULT_GEMINI_TIMEOUT_SECONDS, 300)))
+)
 GEMINI_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 CLI_MODEL_ALIASES = {
     "gemini-2.0-flash-lite": "auto-gemini-3",
@@ -94,7 +97,7 @@ MARKDOWN_LINK_RE = re.compile(r"\[(?P<label>[^\]]+)\]\((?P<url>https?://[^\s)]+)
 MARKDOWN_BOLD_RE = re.compile(r"\*\*(?P<text>.+?)\*\*")
 
 
-def extract_gemini_cli_oauth_client_config() -> tuple[str | None, str | None]:
+def extract_gemini_cli_oauth_client_config() -> Tuple[Optional[str], Optional[str]]:
     gemini_path = shutil.which("gemini")
     if not gemini_path:
         return None, None
@@ -285,23 +288,26 @@ def resolve_cli_model_name() -> str:
     )
 
 
-def generate_gemini_content_with_sdk(prompt: str):
+def generate_gemini_content_with_sdk(prompt: str, timeout_seconds: float = DEFAULT_GEMINI_TIMEOUT_SECONDS):
     model = genai.GenerativeModel(DEFAULT_GEMINI_MODEL)
     future = GEMINI_EXECUTOR.submit(
         model.generate_content,
         prompt,
-        request_options={"timeout": DEFAULT_GEMINI_TIMEOUT_SECONDS},
+        request_options={"timeout": timeout_seconds},
     )
     try:
-        return future.result(timeout=DEFAULT_GEMINI_TIMEOUT_SECONDS)
+        return future.result(timeout=timeout_seconds)
     except FuturesTimeoutError as e:
         future.cancel()
         raise TimeoutError(
-            f"Gemini call exceeded application timeout of {DEFAULT_GEMINI_TIMEOUT_SECONDS}s"
+            f"Gemini call exceeded application timeout of {timeout_seconds}s"
         ) from e
 
 
-def generate_gemini_content_with_cli(prompt: str) -> str:
+def generate_gemini_content_with_cli(
+    prompt: str,
+    timeout_seconds: float = DEFAULT_GEMINI_TIMEOUT_SECONDS,
+) -> str:
     cli_model = resolve_cli_model_name()
     cmd = [
         "gemini",
@@ -317,12 +323,12 @@ def generate_gemini_content_with_cli(prompt: str) -> str:
             cmd,
             capture_output=True,
             text=True,
-            timeout=DEFAULT_GEMINI_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
             check=False,
         )
     except subprocess.TimeoutExpired as e:
         raise TimeoutError(
-            f"gemini CLI exceeded timeout of {DEFAULT_GEMINI_TIMEOUT_SECONDS}s"
+            f"gemini CLI exceeded timeout of {timeout_seconds}s"
         ) from e
     stdout = (completed.stdout or "").strip()
     stderr = (completed.stderr or "").strip()
@@ -349,10 +355,10 @@ def generate_gemini_content_with_cli(prompt: str) -> str:
     return response
 
 
-def generate_gemini_content(prompt: str):
+def generate_gemini_content(prompt: str, timeout_seconds: float = DEFAULT_GEMINI_TIMEOUT_SECONDS):
     if should_use_gemini_cli_backend():
-        return generate_gemini_content_with_cli(prompt)
-    return generate_gemini_content_with_sdk(prompt)
+        return generate_gemini_content_with_cli(prompt, timeout_seconds=timeout_seconds)
+    return generate_gemini_content_with_sdk(prompt, timeout_seconds=timeout_seconds)
 
 app = FastAPI(title="AI Watch API")
 
@@ -508,14 +514,87 @@ Termine par 3 sections courtes :
 """
 
 
+CODIR_NOTE_PROMPT = """# RÔLE
+Tu es Tech Lead à la STTI d'APRIL (assurance, Lyon). Tu produis une note 
+hebdomadaire pour le CODIR à partir d'une veille technique IA détaillée.
+
+# AUDIENCE
+Directeurs APRIL — non-techniques, pressés, lecture en diagonale. Ils 
+décident sur la base : risque / opportunité / coût.
+
+# TÂCHE
+À partir du document de veille fourni, produis une note CODIR au format 
+Word (.docx), strictement 1 page A4.
+
+# RÈGLES DE TRADUCTION (technique → business)
+- **Inverse la pyramide** : impact métier d'abord, techno ensuite.
+- **Supprime** : scores benchmarks (SWE-bench…), tailles de modèles 
+  (128B, 256k context), noms de frameworks (Temporal, LangChain…), 
+  rubriques purement marketing.
+- **Traduis les acronymes** : RCE → "exécution de code à distance", 
+  MCP → "connecteur universel de l'IA", etc.
+- Chaque info doit répondre à : *"qu'est-ce que ça change pour APRIL ? 
+  quel bénéfice ? quel risque d'inaction ?"*
+- Ajoute une **deadline explicite** sur toute alerte de sécurité.
+
+# STRUCTURE (dans cet ordre, rien de plus)
+1. **En-tête** : "NOTE CODIR — VEILLE IA" + date à droite + sous-titre 
+   "STTI / Architecture & Gouvernance IA"
+2. **Synthèse** : un seul paragraphe, 4 lignes max, mots-clés en gras, 
+   alerte sécurité en rouge
+3. **Décisions proposées** : tableau de 3 lignes max (colonnes : # / 
+   Action / Bénéfice attendu / Validateur). Ligne sécurité en rouge.
+4. **Points de vigilance** : 3 bullets, recadrés sur l'impact APRIL 
+   (mentionner notre stack quand pertinent : Dagster, Snowflake, Azure, 
+   EasyVista, M365…)
+5. **Pied de page** : rédacteur + renvoi au rapport complet
+
+# CONTRAINTES VISUELLES
+- A4, marges resserrées (haut/bas 0.75", gauche/droite 1")
+- Police Calibri, bleu corporate #1F4E79, rouge alerte #C0504D
+- Tableau : en-tête bleu plein, alternance gris clair / blanc
+
+# CONTRAINTE DURE
+1 page A4 stricte. Si dépassement, sacrifier d'abord les "à surveiller", 
+puis raccourcir la synthèse. Jamais réduire le tableau de décisions.
+
+# FORMAT DE SORTIE
+Retourne uniquement le contenu structuré en Markdown simple. N'ajoute pas de bloc de code.
+Le document Word sera généré ensuite par l'application.
+
+# DOCUMENT DE VEILLE EN ENTRÉE
+{watch_document}
+"""
+
+
+def decode_html_entities(text: str) -> str:
+    decoded = text
+    for _ in range(3):
+        next_decoded = unescape(decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    return decoded
+
+
 def markdown_to_paragraph_markup(text: str) -> str:
-    escaped = escape(text)
+    escaped = escape(decode_html_entities(text), quote=False)
     escaped = MARKDOWN_LINK_RE.sub(
-        lambda match: f'<link href="{escape(match.group("url"), quote=True)}" color="#1d4ed8">{escape(match.group("label"))}</link>',
+        lambda match: (
+            f'<link href="{escape(decode_html_entities(match.group("url")), quote=True)}" color="#1d4ed8">'
+            f'{escape(decode_html_entities(match.group("label")), quote=False)}</link>'
+        ),
         escaped,
     )
-    escaped = MARKDOWN_BOLD_RE.sub(lambda match: f"<b>{escape(match.group('text'))}</b>", escaped)
+    escaped = MARKDOWN_BOLD_RE.sub(
+        lambda match: f"<b>{escape(decode_html_entities(match.group('text')), quote=False)}</b>",
+        escaped,
+    )
     return escaped.replace("\n", "<br/>")
+
+
+def pdf_text(text: str) -> str:
+    return escape(decode_html_entities(text), quote=False)
 
 
 def build_pdf_styles():
@@ -590,6 +669,36 @@ def build_pdf_styles():
             textColor=colors.HexColor("#64748b"),
             alignment=TA_LEFT,
             spaceAfter=10,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="WatchH3",
+            parent=styles["Heading3"],
+            fontName="Helvetica-Bold",
+            fontSize=12,
+            leading=15,
+            textColor=colors.HexColor("#334155"),
+            alignment=TA_LEFT,
+            spaceBefore=8,
+            spaceAfter=5,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="WatchQuote",
+            parent=styles["Normal"],
+            fontSize=9.5,
+            leading=13,
+            leftIndent=10,
+            rightIndent=6,
+            textColor=colors.HexColor("#475569"),
+            alignment=TA_LEFT,
+            spaceBefore=2,
+            spaceAfter=6,
+            borderColor=colors.HexColor("#cbd5e1"),
+            borderWidth=0.75,
+            borderPadding=6,
         )
     )
     return styles
@@ -669,9 +778,7 @@ def build_markdown_table(lines: list[str], styles):
     return [table, Spacer(1, 10)]
 
 
-def build_pdf_story(content: str, report_date: str):
-    styles = build_pdf_styles()
-    elements = [build_pdf_header(report_date, styles), Spacer(1, 12)]
+def append_markdown_pdf_elements(elements, content: str, styles) -> None:
     lines = content.splitlines()
     index = 0
 
@@ -698,12 +805,12 @@ def build_pdf_story(content: str, report_date: str):
                 elements.append(image)
                 caption = image_match.group("alt").strip()
                 if caption:
-                    elements.append(Paragraph(escape(caption), styles["WatchCaption"]))
+                    elements.append(Paragraph(pdf_text(caption), styles["WatchCaption"]))
             index += 1
             continue
 
         if stripped.startswith("## "):
-            elements.append(Paragraph(escape(stripped[3:]), styles["WatchH2"]))
+            elements.append(Paragraph(pdf_text(stripped[3:]), styles["WatchH2"]))
             index += 1
             continue
 
@@ -717,7 +824,238 @@ def build_pdf_story(content: str, report_date: str):
         elements.append(Paragraph(markdown_to_paragraph_markup(stripped), styles["WatchBody"]))
         index += 1
 
+
+def append_note_pdf_elements(elements, note: models.Note, styles) -> None:
+    created_at = note.created_at.strftime("%Y-%m-%d %H:%M") if note.created_at else ""
+    kind_labels = {
+        "detail": "Détail",
+        "definition": "Définition",
+        "note": "Note",
+    }
+    title_parts = [f"{kind_labels.get(note.kind, note.kind or 'Note')} #{note.id}"]
+    if created_at:
+        title_parts.append(created_at)
+
+    elements.append(Paragraph(pdf_text(" - ".join(title_parts)), styles["WatchH3"]))
+    if note.source_text and note.source_text.strip():
+        elements.append(Paragraph("<b>Extrait :</b>", styles["WatchCaption"]))
+        elements.append(Paragraph(markdown_to_paragraph_markup(note.source_text.strip()), styles["WatchQuote"]))
+    if note.content and note.content.strip():
+        append_markdown_pdf_elements(elements, note.content.strip(), styles)
+
+
+def build_pdf_story(
+    content: str,
+    report_date: str,
+    summary: Optional[models.ReportSummary] = None,
+    notes: Optional[List[models.Note]] = None,
+):
+    styles = build_pdf_styles()
+    elements = [build_pdf_header(report_date, styles), Spacer(1, 12)]
+
+    if summary and summary.content and summary.content.strip():
+        elements.append(Paragraph("Résumé exécutif", styles["WatchH2"]))
+        append_markdown_pdf_elements(elements, summary.content.strip(), styles)
+        elements.append(Spacer(1, 8))
+
+    elements.append(Paragraph("Rapport complet", styles["WatchH2"]))
+    append_markdown_pdf_elements(elements, content, styles)
+
+    report_notes = notes or []
+    if report_notes:
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph("Notes, détails et définitions", styles["WatchH2"]))
+        for note in report_notes:
+            append_note_pdf_elements(elements, note, styles)
+
     return elements
+
+
+def clean_markdown_text(text: str) -> str:
+    cleaned = decode_html_entities(text).strip()
+    cleaned = re.sub(r"^#{1,6}\s+", "", cleaned)
+    cleaned = cleaned.replace("**", "")
+    cleaned = cleaned.replace("__", "")
+    cleaned = cleaned.replace("—", "-")
+    return cleaned.strip()
+
+
+def is_security_text(text: str) -> bool:
+    lowered = text.lower()
+    markers = [
+        "sécurité",
+        "securite",
+        "alerte",
+        "vulnérabilité",
+        "vulnerabilite",
+        "exécution de code",
+        "execution de code",
+        "critique",
+        "rce",
+    ]
+    return any(marker in lowered for marker in markers)
+
+
+def add_markdown_runs(paragraph, text: str, color=None, bold_default: bool = False) -> None:
+    parts = re.split(r"(\*\*.*?\*\*)", decode_html_entities(text))
+    for part in parts:
+        if not part:
+            continue
+        is_bold = part.startswith("**") and part.endswith("**")
+        run_text = part[2:-2] if is_bold else part
+        run = paragraph.add_run(run_text)
+        run.bold = bold_default or is_bold
+        if color is not None:
+            run.font.color.rgb = color
+
+
+def set_docx_cell_shading(cell, fill: str) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    shading = OxmlElement("w:shd")
+    shading.set(qn("w:fill"), fill)
+    cell._tc.get_or_add_tcPr().append(shading)
+
+
+def set_docx_cell_text(cell, text: str, color=None, bold: bool = False) -> None:
+    paragraph = cell.paragraphs[0]
+    paragraph.text = ""
+    run = paragraph.add_run(clean_markdown_text(text))
+    run.bold = bold
+    if color is not None:
+        run.font.color.rgb = color
+
+
+def parse_markdown_table(table_lines: List[str]) -> List[List[str]]:
+    rows = []
+    for line in table_lines:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def append_docx_markdown(document, content: str) -> None:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt, RGBColor
+
+    blue = RGBColor(0x1F, 0x4E, 0x79)
+    red = RGBColor(0xC0, 0x50, 0x4D)
+    lines = content.splitlines()
+    index = 0
+
+    while index < len(lines):
+        raw_line = lines[index].rstrip()
+        stripped = raw_line.strip()
+        if not stripped:
+            index += 1
+            continue
+
+        if stripped.startswith("|"):
+            table_lines = []
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                table_lines.append(lines[index].strip())
+                index += 1
+            rows = parse_markdown_table(table_lines)
+            if rows:
+                table = document.add_table(rows=len(rows), cols=max(len(row) for row in rows))
+                table.style = "Table Grid"
+                for row_index, row in enumerate(rows):
+                    for col_index, value in enumerate(row):
+                        cell = table.cell(row_index, col_index)
+                        if row_index == 0:
+                            set_docx_cell_shading(cell, "1F4E79")
+                            set_docx_cell_text(cell, value, color=RGBColor(0xFF, 0xFF, 0xFF), bold=True)
+                        else:
+                            set_docx_cell_shading(cell, "F2F2F2" if row_index % 2 == 1 else "FFFFFF")
+                            set_docx_cell_text(cell, value, color=red if is_security_text(" ".join(row)) else None)
+                continue
+
+        if stripped.startswith("#"):
+            paragraph = document.add_paragraph()
+            paragraph.paragraph_format.space_before = Pt(4)
+            paragraph.paragraph_format.space_after = Pt(2)
+            add_markdown_runs(paragraph, clean_markdown_text(stripped), color=blue, bold_default=True)
+            index += 1
+            continue
+
+        if stripped.startswith(("- ", "* ")):
+            paragraph = document.add_paragraph(style="List Bullet")
+            paragraph.paragraph_format.space_after = Pt(1)
+            add_markdown_runs(paragraph, stripped[2:], color=red if is_security_text(stripped) else None)
+            index += 1
+            continue
+
+        paragraph = document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        paragraph.paragraph_format.space_after = Pt(2)
+        add_markdown_runs(paragraph, stripped, color=red if is_security_text(stripped) else None)
+        index += 1
+
+
+def build_codir_docx(report: models.Report) -> bytes:
+    try:
+        from docx import Document
+        from docx.enum.table import WD_TABLE_ALIGNMENT
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Inches, Pt, RGBColor
+    except ImportError as e:
+        raise RuntimeError("python-docx is required to export CODIR notes. Run pip install -r requirements.txt") from e
+
+    document = Document()
+    section = document.sections[0]
+    section.top_margin = Inches(0.75)
+    section.bottom_margin = Inches(0.75)
+    section.left_margin = Inches(1)
+    section.right_margin = Inches(1)
+
+    styles = document.styles
+    styles["Normal"].font.name = "Calibri"
+    styles["Normal"].font.size = Pt(8.8)
+
+    blue = RGBColor(0x1F, 0x4E, 0x79)
+    red = RGBColor(0xC0, 0x50, 0x4D)
+
+    header_table = document.add_table(rows=2, cols=2)
+    header_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    header_table.autofit = True
+    title_cell = header_table.cell(0, 0)
+    title_run = title_cell.paragraphs[0].add_run("NOTE CODIR - VEILLE IA")
+    title_run.bold = True
+    title_run.font.size = Pt(14)
+    title_run.font.color.rgb = blue
+
+    date_cell = header_table.cell(0, 1)
+    date_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    date_run = date_cell.paragraphs[0].add_run(report.date)
+    date_run.bold = True
+    date_run.font.color.rgb = blue
+
+    subtitle_cell = header_table.cell(1, 0)
+    subtitle_cell.merge(header_table.cell(1, 1))
+    subtitle_run = subtitle_cell.paragraphs[0].add_run("STTI / Architecture & Gouvernance IA")
+    subtitle_run.font.color.rgb = blue
+    subtitle_run.font.size = Pt(9)
+
+    body_content = "\n".join(
+        line
+        for line in report.content.splitlines()
+        if "NOTE CODIR" not in line.upper()
+        and "STTI / ARCHITECTURE" not in line.upper()
+    )
+    append_docx_markdown(document, body_content)
+
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    footer_run = footer.add_run("Rédacteur : STTI / Tech Lead - Renvoi au rapport complet de veille IA")
+    footer_run.font.size = Pt(8)
+    footer_run.font.color.rgb = red if is_security_text(report.content) else blue
+
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
 
 @app.get("/reports", response_model=List[schemas.Report])
 def read_reports(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), _=Depends(verify_token)):
@@ -803,7 +1141,12 @@ Rapport :
 
 
 @app.post("/reports/{report_id}/detail")
-def expand_report_selection(report_id: int, selected_text: str, db: Session = Depends(get_db), _=Depends(verify_token)):
+def expand_report_selection(
+    report_id: int,
+    selected_text: str,
+    db: Session = Depends(get_db),
+    _=Depends(verify_token),
+):
     db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -833,6 +1176,46 @@ Rapport complet :
         return {"detail": content}
     except Exception as e:
         print(f"Error generating detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/reports/{report_id}/definition", response_model=schemas.ReportDefinitionResponse)
+def define_report_selection(
+    report_id: int,
+    selected_text: str,
+    db: Session = Depends(get_db),
+    _=Depends(verify_token),
+):
+    db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if db_report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    definition_prompt = f"""Tu reçois un rapport de veille IA déjà rédigé et un terme ou extrait sélectionné par l'utilisateur.
+
+Ta tâche : produire une définition courte, utile et exploitable qui pourra être ajoutée en fin de document.
+
+Contraintes :
+- explique le concept en français clair
+- commence par une phrase de définition
+- ajoute 2 à 3 points maximum : pourquoi c'est important, risque ou usage concret
+- traduis les acronymes si nécessaire
+- si le rapport ne donne pas assez de contexte, donne une définition générale et indique qu'elle est hors contexte rapport
+- ne fais pas de recherche web en direct
+
+Terme ou extrait sélectionné :
+{selected_text}
+
+Rapport complet :
+{db_report.content}
+"""
+
+    try:
+        load_gemini_auth()
+        response = generate_gemini_content(definition_prompt)
+        content = response if isinstance(response, str) else response.text
+        return {"definition": content}
+    except Exception as e:
+        print(f"Error generating definition: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -954,10 +1337,13 @@ async def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token))
         active_model = resolve_cli_model_name() if backend_kind == "cli" else DEFAULT_GEMINI_MODEL
         print(
             f"Sending request to Gemini backend={backend_kind} model={active_model} "
-            f"timeout={DEFAULT_GEMINI_TIMEOUT_SECONDS}s"
+            f"timeout={REPORT_GEMINI_TIMEOUT_SECONDS}s"
         )
         start = time.perf_counter()
-        response = generate_gemini_content(TECHNICAL_PROMPT)
+        response = generate_gemini_content(
+            TECHNICAL_PROMPT,
+            timeout_seconds=REPORT_GEMINI_TIMEOUT_SECONDS,
+        )
         elapsed = time.perf_counter() - start
         print(f"Gemini response received in {elapsed:.2f}s")
         content = response if isinstance(response, str) else response.text
@@ -976,11 +1362,69 @@ async def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token))
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/reports/{report_id}/codir", response_model=schemas.Report)
+def generate_codir_note(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
+    source_report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if source_report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    source_summary = db.query(models.ReportSummary).filter(models.ReportSummary.report_id == report_id).first()
+    source_notes = (
+        db.query(models.Note)
+        .filter(models.Note.report_id == report_id)
+        .order_by(models.Note.created_at.asc())
+        .all()
+    )
+
+    watch_parts = [f"# Rapport complet - {source_report.date}", source_report.content]
+    if source_summary and source_summary.content.strip():
+        watch_parts.append(f"# Résumé exécutif enregistré\n{source_summary.content.strip()}")
+    if source_notes:
+        notes_text = "\n\n".join(
+            f"- {note.kind}: {note.content.strip()}" for note in source_notes if note.content and note.content.strip()
+        )
+        if notes_text:
+            watch_parts.append(f"# Notes, détails et définitions enregistrés\n{notes_text}")
+
+    prompt = CODIR_NOTE_PROMPT.format(watch_document="\n\n".join(watch_parts))
+
+    try:
+        load_gemini_auth()
+        backend_kind = "cli" if should_use_gemini_cli_backend() else "sdk"
+        active_model = resolve_cli_model_name() if backend_kind == "cli" else DEFAULT_GEMINI_MODEL
+        print(
+            f"Sending CODIR note request to Gemini backend={backend_kind} model={active_model} "
+            f"timeout={REPORT_GEMINI_TIMEOUT_SECONDS}s"
+        )
+        response = generate_gemini_content(prompt, timeout_seconds=REPORT_GEMINI_TIMEOUT_SECONDS)
+        content = response if isinstance(response, str) else response.text
+
+        db_report = models.Report(
+            date=datetime.now().strftime("%Y-%m-%d"),
+            report_type="codir_note",
+            content=content,
+        )
+        db.add(db_report)
+        db.commit()
+        db.refresh(db_report)
+        return db_report
+    except Exception as e:
+        print(f"Error generating CODIR note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/reports/{report_id}/pdf")
 def get_report_pdf(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
     db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if db_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
+    db_summary = db.query(models.ReportSummary).filter(models.ReportSummary.report_id == report_id).first()
+    db_notes = (
+        db.query(models.Note)
+        .filter(models.Note.report_id == report_id)
+        .order_by(models.Note.created_at.asc())
+        .all()
+    )
     
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -992,7 +1436,7 @@ def get_report_pdf(report_id: int, db: Session = Depends(get_db), _=Depends(veri
         bottomMargin=18 * mm,
         title=f"AI Technical Watch - {db_report.date}",
     )
-    elements = build_pdf_story(db_report.content, db_report.date)
+    elements = build_pdf_story(db_report.content, db_report.date, summary=db_summary, notes=db_notes)
     doc.build(elements)
     
     return Response(
@@ -1001,4 +1445,22 @@ def get_report_pdf(report_id: int, db: Session = Depends(get_db), _=Depends(veri
         headers={
             "Content-Disposition": f"attachment; filename=ai_watch_{db_report.date}.pdf"
         }
+    )
+
+
+@app.get("/reports/{report_id}/docx")
+def get_report_docx(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
+    db_report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if db_report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if db_report.report_type != "codir_note":
+        raise HTTPException(status_code=400, detail="DOCX export is only available for CODIR notes")
+
+    docx_bytes = build_codir_docx(db_report)
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f"attachment; filename=note_codir_veille_ia_{db_report.date}.docx"
+        },
     )
