@@ -5,3 +5,7 @@ __pycache__/
 .env
 sql_app.db
 test_app.db
+
+# Local VCM agent workspaces and runtime state
+.scion/agents/
+.vcm/agents/
