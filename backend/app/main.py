@@ -1004,6 +1004,169 @@ def build_codir_docx(report: models.Report) -> bytes:
     document.save(buffer)
     return buffer.getvalue()
 
+
+NEWS_SECTION_PREFIX = "## nouveautés"
+MATURITY_LABEL_RE = re.compile(r"^\**\s*maturit[ée]\s*\**\s*[:：\-–—]?\s*", re.IGNORECASE)
+
+
+def strip_markdown_emphasis(text: str) -> str:
+    return re.sub(r"(\*\*|__|\*|_|`)", "", text).strip()
+
+
+def extract_news_items(content: str) -> list[dict]:
+    """Extrait les nouveautés (`### titre` + puces) de la section « Nouveautés détaillées »."""
+    if not content:
+        return []
+    items: list[dict] = []
+    in_section = False
+    current: Optional[dict] = None
+
+    def flush() -> None:
+        if current and current["title"]:
+            current["content"] = "\n".join(current["lines"]).strip()
+            del current["lines"]
+            items.append(current)
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if stripped.startswith("## ") and not stripped.startswith("### "):
+            if in_section:
+                break
+            in_section = stripped.lower().startswith(NEWS_SECTION_PREFIX)
+            continue
+        if not in_section:
+            continue
+        if stripped.startswith("### "):
+            flush()
+            current = {
+                "title": strip_markdown_emphasis(stripped[4:]),
+                "maturity": None,
+                "lines": [],
+            }
+            continue
+        if current is None:
+            continue
+        current["lines"].append(line)
+        if stripped.startswith("- ") and current["maturity"] is None:
+            bullet = strip_markdown_emphasis(stripped[2:])
+            if MATURITY_LABEL_RE.match(bullet):
+                value = MATURITY_LABEL_RE.sub("", bullet).strip()
+                current["maturity"] = value[:80] or None
+    flush()
+    for index, item in enumerate(items):
+        item["position"] = index
+    return items
+
+
+def sync_news_items(db: Session, report: models.Report) -> None:
+    """Enregistre les nouveautés d'un rapport de veille si ce n'est pas déjà fait."""
+    if report.report_type != "technical_watch":
+        return
+    exists = db.query(models.NewsItem).filter(models.NewsItem.report_id == report.id).first()
+    if exists is not None:
+        return
+    for item in extract_news_items(report.content or ""):
+        db.add(
+            models.NewsItem(
+                report_id=report.id,
+                position=item["position"],
+                title=item["title"],
+                maturity=item["maturity"],
+                content=item["content"],
+            )
+        )
+    db.commit()
+
+
+def backfill_news_items() -> None:
+    db = SessionLocal()
+    try:
+        known_ids = {row[0] for row in db.query(models.NewsItem.report_id).distinct()}
+        reports = (
+            db.query(models.Report)
+            .filter(models.Report.report_type == "technical_watch")
+            .all()
+        )
+        for report in reports:
+            if report.id not in known_ids:
+                sync_news_items(db, report)
+    except Exception as e:
+        print(f"News backfill skipped: {e}")
+    finally:
+        db.close()
+
+
+backfill_news_items()
+
+
+def serialize_news_item(item: models.NewsItem, report_dates: dict[int, str]) -> schemas.NewsItem:
+    payload = schemas.NewsItem.model_validate(item)
+    payload.report_date = report_dates.get(item.report_id)
+    return payload
+
+
+def news_report_dates(db: Session, items: list[models.NewsItem]) -> dict[int, str]:
+    report_ids = {item.report_id for item in items}
+    if not report_ids:
+        return {}
+    rows = db.query(models.Report.id, models.Report.date).filter(models.Report.id.in_(report_ids)).all()
+    return {row[0]: row[1] for row in rows}
+
+
+@app.get("/news", response_model=List[schemas.NewsItem])
+def read_news(
+    saved: Optional[bool] = None,
+    report_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    _=Depends(verify_token),
+):
+    query = db.query(models.NewsItem)
+    if saved is not None:
+        query = query.filter(models.NewsItem.saved == saved)
+    if report_id is not None:
+        query = query.filter(models.NewsItem.report_id == report_id)
+    items = query.order_by(
+        models.NewsItem.saved_at.desc() if saved else models.NewsItem.created_at.desc(),
+        models.NewsItem.position.asc(),
+    ).all()
+    dates = news_report_dates(db, items)
+    return [serialize_news_item(item, dates) for item in items]
+
+
+@app.get("/reports/{report_id}/news", response_model=List[schemas.NewsItem])
+def read_report_news(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
+    report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    sync_news_items(db, report)
+    items = (
+        db.query(models.NewsItem)
+        .filter(models.NewsItem.report_id == report_id)
+        .order_by(models.NewsItem.position.asc())
+        .all()
+    )
+    dates = {report.id: report.date}
+    return [serialize_news_item(item, dates) for item in items]
+
+
+@app.patch("/news/{news_id}", response_model=schemas.NewsItem)
+def update_news_item(
+    news_id: int,
+    payload: schemas.NewsItemUpdate,
+    db: Session = Depends(get_db),
+    _=Depends(verify_token),
+):
+    item = db.query(models.NewsItem).filter(models.NewsItem.id == news_id).first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="News not found")
+    item.saved = payload.saved
+    item.saved_at = datetime.utcnow() if payload.saved else None
+    db.commit()
+    db.refresh(item)
+    return serialize_news_item(item, news_report_dates(db, [item]))
+
+
 @app.get("/reports", response_model=List[schemas.Report])
 def read_reports(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), _=Depends(verify_token)):
     reports = db.query(models.Report).order_by(models.Report.created_at.desc()).offset(skip).limit(limit).all()
@@ -1024,6 +1187,9 @@ def delete_report(report_id: int, db: Session = Depends(get_db), _=Depends(verif
         raise HTTPException(status_code=404, detail="Report not found")
     db.query(models.ReportSummary).filter(models.ReportSummary.report_id == report_id).delete()
     db.query(models.Note).filter(models.Note.report_id == report_id).delete()
+    db.query(models.NewsItem).filter(
+        models.NewsItem.report_id == report_id, models.NewsItem.saved.is_(False)
+    ).delete(synchronize_session=False)
     db.delete(db_report)
     db.commit()
     return Response(status_code=204)
@@ -1303,6 +1469,7 @@ async def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token))
         db.add(db_report)
         db.commit()
         db.refresh(db_report)
+        sync_news_items(db, db_report)
         return db_report
     except Exception as e:
         print(f"Error triggering report: {e}")

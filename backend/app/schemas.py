@@ -71,3 +71,23 @@ class ChatMessage(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class NewsItem(BaseModel):
+    id: int
+    report_id: int
+    position: int
+    title: str
+    maturity: Optional[str] = None
+    content: str
+    saved: bool
+    saved_at: Optional[datetime] = None
+    created_at: datetime
+    report_date: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class NewsItemUpdate(BaseModel):
+    saved: bool

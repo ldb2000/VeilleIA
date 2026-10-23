@@ -1,87 +1,73 @@
+/* Charte APRIL : Poppins, bleu pétrole, vert d'action, orange d'accent. */
 :root {
-  --bg-primary: #08090b;
-  --bg-secondary: rgba(18, 19, 23, 0.86);
-  --bg-tertiary: rgba(28, 30, 36, 0.92);
-  --surface-raised: rgba(36, 38, 45, 0.82);
-  --border: rgba(255, 255, 255, 0.09);
-  --border-glow: rgba(255, 255, 255, 0.18);
-  --text-primary: #f4f4f5;
-  --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
-  --accent: #f4f4f5;
-  --accent-cyan: #d4d4d8;
-  --accent-lime: #a6e85f;
-  --accent-amber: #f5c84b;
-  --accent-blue: #8ab4ff;
-  --glow-blue: rgba(255, 255, 255, 0.12);
-  --glow-cyan: rgba(255, 255, 255, 0.12);
-  --danger: #f87171;
-  --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
+  --april-blue: #004161;
+  --april-blue-700: #003049;
+  --april-blue-tint: #e6eef2;
+  --april-green: #639e30;
+  --april-green-700: #527f27;
+  --april-green-800: #3f6420;
+  --april-green-tint: #eef5e7;
+  --april-orange: #f7aa36;
+  --april-orange-text: #7a4e07;
+  --april-orange-tint: #fdf1dd;
+  --april-cyan: #3eaac4;
+  --april-cyan-text: #1d6577;
+  --april-cyan-tint: #e5f4f8;
+  --april-lime: #add04e;
+  --april-magenta: #d7488f;
+  --april-magenta-text: #9a2a63;
+  --april-magenta-tint: #fbe9f2;
+  --april-gray: #f1f1f1;
+  --april-border: #e8e8e8;
+  --april-gradient: linear-gradient(90deg, #639e30 0%, #f7aa36 100%);
+
+  --surface-page: var(--april-gray);
+  --surface-card: #ffffff;
+  --text-heading: var(--april-blue);
+  --text-body: var(--april-blue);
+  --text-muted: #4d6b7c;
+  --text-link: var(--april-green-700);
+  --border-subtle: var(--april-border);
+  --danger: #b42318;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px rgba(0, 65, 97, 0.06);
+  --shadow-md: 0 4px 14px rgba(0, 65, 97, 0.08);
+  --shadow-lg: 0 12px 32px rgba(0, 65, 97, 0.12);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --font: 'Poppins', Arial, Helvetica, sans-serif;
+  --font-mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
 
   font-family: var(--font);
   font-size: 15px;
-  line-height: 1.65;
-  color: var(--text-primary);
-  background: var(--bg-primary);
+  line-height: 1.6;
+  color: var(--text-body);
+  background: var(--surface-page);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    radial-gradient(
-      circle at 72% 24%,
-      rgba(255, 255, 255, 0.075) 0%,
-      rgba(255, 255, 255, 0.02) 24%,
-      transparent 46%
-    ),
-    radial-gradient(
-      circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
-      rgba(255, 255, 255, 0.035) 0%,
-      transparent 34%
-    );
-  background-size: 72px 72px, 72px 72px, 100% 100%, 100% 100%;
-  background-attachment: fixed;
   min-height: 100vh;
-}
-
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(8, 9, 11, 0.12), rgba(8, 9, 11, 0.72));
-  pointer-events: none;
-  z-index: -1;
-}
-
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  background-image: linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px);
-  background-size: 100% 6px;
-  opacity: 0.32;
-  pointer-events: none;
-  z-index: 9999;
+  background: var(--surface-page);
+  color: var(--text-body);
 }
 
 #root {
-  max-width: 100%;
-  margin: 0 auto;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  box-sizing: border-box;
 }
 
 h1,
@@ -90,20 +76,20 @@ h3,
 h4,
 h5,
 h6 {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  color: var(--text-primary);
-  line-height: 1.18;
+  font-family: var(--font);
+  font-weight: 600;
+  color: var(--text-heading);
+  line-height: 1.25;
+  margin: 0;
+  text-wrap: balance;
 }
 
 h1 {
-  font-size: 1.8rem;
-  letter-spacing: 0;
+  font-size: 1.9rem;
 }
 
 h2 {
-  font-size: 1.35rem;
-  letter-spacing: 0;
+  font-size: 1.3rem;
 }
 
 h3 {
@@ -114,8 +100,13 @@ p {
   margin: 0;
 }
 
+strong,
+b {
+  font-weight: 600;
+}
+
 a {
-  color: var(--text-primary);
+  color: var(--text-link);
   text-decoration: none;
 }
 
@@ -125,18 +116,31 @@ a:hover {
 
 code {
   font-family: var(--font-mono);
-  font-size: 0.85em;
-  padding: 0.2em 0.5em;
-  border-radius: 4px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
+  font-size: 0.88em;
+  padding: 0.1em 0.4em;
+  border-radius: var(--radius-sm);
+  background: var(--april-gray);
+  color: var(--april-blue);
+}
+
+:focus-visible {
+  outline: 2px solid var(--april-green);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 @keyframes fadeInUp {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -144,22 +148,11 @@ code {
   }
 }
 
-@keyframes glowPulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 1px var(--border);
-  }
-  50% {
-    box-shadow: 0 0 0 1px var(--border-glow);
-  }
-}
-
-@keyframes iconGlow {
-  0%,
-  100% {
-    filter: none;
-  }
-  50% {
-    filter: none;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
   }
 }

@@ -141,3 +141,33 @@ export const downloadReportDocx = async (id: number): Promise<Blob> => {
   });
   return response.data;
 };
+
+export interface NewsItem {
+  id: number;
+  report_id: number;
+  position: number;
+  title: string;
+  maturity?: string | null;
+  content: string;
+  saved: boolean;
+  saved_at?: string | null;
+  created_at: string;
+  report_date?: string | null;
+}
+
+export const getNews = async (params?: { saved?: boolean; reportId?: number }): Promise<NewsItem[]> => {
+  const response = await axios.get(`${API_URL}/news`, {
+    params: { saved: params?.saved, report_id: params?.reportId },
+  });
+  return response.data;
+};
+
+export const getReportNews = async (reportId: number): Promise<NewsItem[]> => {
+  const response = await axios.get(`${API_URL}/reports/${reportId}/news`);
+  return response.data;
+};
+
+export const setNewsSaved = async (newsId: number, saved: boolean): Promise<NewsItem> => {
+  const response = await axios.patch(`${API_URL}/news/${newsId}`, { saved });
+  return response.data;
+};

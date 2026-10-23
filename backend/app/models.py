@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, Text
 from datetime import datetime
 from .database import Base
 
@@ -41,4 +41,20 @@ class ChatMessage(Base):
     role = Column(String, index=True)
     content = Column(Text)
     report_ids = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class NewsItem(Base):
+    """Une nouveauté extraite de la section « Nouveautés détaillées » d'un rapport."""
+
+    __tablename__ = "news_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_id = Column(Integer, index=True)
+    position = Column(Integer, default=0)
+    title = Column(String)
+    maturity = Column(String, nullable=True)
+    content = Column(Text)
+    saved = Column(Boolean, default=False, index=True)
+    saved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
