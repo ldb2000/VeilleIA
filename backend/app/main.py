@@ -13,14 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import func, inspect, text
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 from datetime import datetime
 from io import BytesIO
 
-import google.generativeai as genai
 import httpx
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from dotenv import load_dotenv
 import markdown
 from reportlab.lib import colors
@@ -31,6 +28,16 @@ from reportlab.lib.units import mm
 from reportlab.platypus import Image as RLImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from . import models, schemas, database
+
+if TYPE_CHECKING:
+    from google.oauth2.credentials import Credentials
+
+
+def import_genai():
+    """Charge le SDK Gemini à la demande : inutile (et bruyant) avec Codex ou OpenRouter."""
+    import google.generativeai as genai
+
+    return genai
 from .database import SessionLocal, engine
 
 load_dotenv()
@@ -146,7 +153,9 @@ def extract_gemini_cli_oauth_client_config() -> Tuple[Optional[str], Optional[st
         return None, None
 
 
-def load_oauth_credentials(creds_path: Path) -> tuple[Credentials, dict]:
+def load_oauth_credentials(creds_path: Path) -> "tuple[Credentials, dict]":
+    from google.oauth2.credentials import Credentials
+
     with creds_path.open("r") as f:
         data = json.load(f)
 
@@ -184,7 +193,7 @@ def load_oauth_credentials(creds_path: Path) -> tuple[Credentials, dict]:
     return creds, data
 
 
-def persist_oauth_credentials(creds_path: Path, source_data: dict, creds: Credentials) -> None:
+def persist_oauth_credentials(creds_path: Path, source_data: dict, creds: "Credentials") -> None:
     updated = dict(source_data)
     updated["access_token"] = creds.token
     if creds.refresh_token:
@@ -223,6 +232,8 @@ def load_gemini_auth():
 
             if creds.refresh_token and creds.client_id and creds.client_secret:
                 print("Refreshing Gemini OAuth access token")
+                from google.auth.transport.requests import Request
+
                 creds.refresh(Request())
                 persist_oauth_credentials(creds_path, raw_creds, creds)
             elif not creds.token:
@@ -242,7 +253,7 @@ def load_gemini_auth():
             original_gemini_api_key = os.environ.pop("GEMINI_API_KEY", None)
             original_google_api_key = os.environ.pop("GOOGLE_API_KEY", None)
             try:
-                genai.configure(credentials=creds)
+                import_genai().configure(credentials=creds)
             finally:
                 if original_gemini_api_key is not None:
                     os.environ["GEMINI_API_KEY"] = original_gemini_api_key
@@ -255,7 +266,7 @@ def load_gemini_auth():
 
     if api_key:
         print("Configuring Gemini with GEMINI_API_KEY")
-        genai.configure(api_key=api_key)
+        import_genai().configure(api_key=api_key)
         return True
 
     raise RuntimeError(
@@ -312,7 +323,7 @@ def resolve_cli_model_name() -> str:
 
 
 def generate_gemini_content_with_sdk(prompt: str, timeout_seconds: float = DEFAULT_GEMINI_TIMEOUT_SECONDS):
-    model = genai.GenerativeModel(DEFAULT_GEMINI_MODEL)
+    model = import_genai().GenerativeModel(DEFAULT_GEMINI_MODEL)
     future = GEMINI_EXECUTOR.submit(
         model.generate_content,
         prompt,
