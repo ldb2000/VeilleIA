@@ -1395,10 +1395,12 @@ def chat_with_reports(payload: schemas.ChatRequest, db: Session = Depends(get_db
     if not reports:
         raise HTTPException(status_code=404, detail="No reports available")
 
+    # On mémorise les rapports réellement consultés pour afficher les sources.
+    used_report_ids = [report.id for report in reports]
     user_message = models.ChatMessage(
         role="user",
         content=question,
-        report_ids=serialize_report_ids(payload.report_ids),
+        report_ids=serialize_report_ids(used_report_ids),
     )
     db.add(user_message)
     db.commit()
@@ -1433,7 +1435,7 @@ Rapports de contexte :
             models.ChatMessage(
                 role="assistant",
                 content=content,
-                report_ids=serialize_report_ids(payload.report_ids),
+                report_ids=serialize_report_ids(used_report_ids),
             )
         )
         db.commit()

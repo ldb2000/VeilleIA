@@ -8,15 +8,18 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Download,
   FileText,
   MessageSquareShare,
   MoreVertical,
   NotebookPen,
+  Plus,
   RefreshCw,
   Search,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   chatWithReports,
@@ -92,6 +95,12 @@ type NewsField = {
 };
 
 const PROJECT_SYNTHESIS_CACHE_KEY = 'veilleia.projectSynthesis.v2';
+const CHAT_MAX_REPORTS = 3;
+const CHAT_SUGGESTIONS = [
+  'Que faut-il tester cette semaine ?',
+  'Alertes sécurité en cours',
+  'Lien avec Snowflake ou Dagster',
+];
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const PROJECT_SYNTHESIS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const TEAMS_SHARE_URL =
@@ -301,6 +310,11 @@ function App() {
   const [newsSaving, setNewsSaving] = useState<number | null>(null);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
+  const [chatReportIds, setChatReportIds] = useState<number[] | null>(null);
+  const [chatReportPickerOpen, setChatReportPickerOpen] = useState(false);
+  const [notesFilter, setNotesFilter] = useState<'all' | 'note' | 'detail' | 'definition'>('all');
+  const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
+  const [savedAnswerIds, setSavedAnswerIds] = useState<Set<number>>(new Set());
   const [projectSynthesis, setProjectSynthesis] = useState<ProjectSynthesisCacheEntry | null>(null);
   const [projectSynthesisLoading, setProjectSynthesisLoading] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
@@ -669,18 +683,28 @@ function App() {
     }
   };
 
-  const handleAskChat = async () => {
-    const question = chatInput.trim();
-    if (!question) {
+  // Rapports consultés par la recherche : choix explicite, sinon les 3 dernières analyses.
+  const defaultChatReportIds = reports
+    .filter((report) => report.report_type === 'technical_watch')
+    .slice(0, CHAT_MAX_REPORTS)
+    .map((report) => report.id);
+  const activeChatReportIds = (chatReportIds ?? defaultChatReportIds).filter((id) =>
+    reports.some((report) => report.id === id),
+  );
+
+  const handleAskChat = async (rawQuestion?: string) => {
+    const question = (rawQuestion ?? chatInput).trim();
+    if (!question || chatLoading) {
       return;
     }
+    const reportIds = activeChatReportIds.length > 0 ? activeChatReportIds : reports.slice(0, CHAT_MAX_REPORTS).map((r) => r.id);
 
     const pendingMessage: ChatMessage = {
       id: Date.now(),
       role: 'user',
       content: question,
       created_at: new Date().toISOString(),
-      report_ids: selectedReport ? [selectedReport.id] : reports.slice(0, 3).map((report) => report.id),
+      report_ids: reportIds,
     };
     setChatHistory((current) => [...current, pendingMessage]);
     setCurrentView('searches');
@@ -688,17 +712,57 @@ function App() {
     setChatLoading(true);
 
     try {
-      await chatWithReports(
-        question,
-        selectedReport ? [selectedReport.id] : reports.slice(0, 3).map((report) => report.id),
-      );
+      await chatWithReports(question, reportIds);
       await fetchChatHistory();
     } catch (error) {
       setChatHistory((current) => current.filter((message) => message.id !== pendingMessage.id));
-      console.error('Erreur lors de la recherche chatbot :', error);
-      alert('Impossible de lancer la recherche chatbot.');
+      setChatInput(question);
+      console.error('Erreur lors de la recherche :', error);
+      alert('Impossible de lancer la recherche.');
     } finally {
       setChatLoading(false);
+    }
+  };
+
+  const removeChatReport = (reportId: number) => {
+    setChatReportIds(activeChatReportIds.filter((id) => id !== reportId));
+  };
+
+  const addChatReport = (reportId: number) => {
+    setChatReportIds([...activeChatReportIds, reportId].slice(0, CHAT_MAX_REPORTS));
+    setChatReportPickerOpen(false);
+  };
+
+  const handleCopyAnswer = async (message: ChatMessage) => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopiedMessageId(message.id);
+      window.setTimeout(() => setCopiedMessageId((current) => (current === message.id ? null : current)), 2000);
+    } catch (error) {
+      console.error('Copie impossible :', error);
+      alert('Impossible de copier la réponse.');
+    }
+  };
+
+  const handleSaveAnswerAsNote = async (message: ChatMessage, question: string) => {
+    const reportId = message.report_ids?.find((id) => reports.some((report) => report.id === id));
+    if (!reportId) {
+      alert('Aucun rapport source disponible pour rattacher cette note.');
+      return;
+    }
+    try {
+      const newNote = await createNote(reportId, {
+        kind: 'note',
+        source_text: question || message.content,
+        content: message.content,
+      });
+      setNotes((current) =>
+        current.some((note) => note.id === newNote.id) ? current : [newNote, ...current],
+      );
+      setSavedAnswerIds((current) => new Set(current).add(message.id));
+    } catch (error) {
+      console.error('Erreur lors de l’enregistrement de la note :', error);
+      alert('Impossible d’enregistrer la réponse en note.');
     }
   };
 
@@ -1531,54 +1595,204 @@ function App() {
     </div>
   );
 
-  const renderSearchesView = () => (
-    <div className="searches-view">
-      <div className="view-header">
-        <h1>Recherches</h1>
-        <p className="muted-text">
-          Posez des questions sur les rapports ou demandez du contexte technique sur une technologie.
-        </p>
-      </div>
-      <div className="chat-panel">
-        <div className="chat-history">
-          {chatHistory.length > 0 ? (
-            <>
-              {chatHistory.map((message) => (
-                <div key={message.id} className={`chat-message chat-message-${message.role}`}>
-                  <div className="chat-message-role">{message.role === 'user' ? 'Vous' : 'Assistant'}</div>
-                  {renderMarkdown(message.content)}
-                </div>
+  const renderSearchesView = () => {
+    const chatReports = activeChatReportIds
+      .map((id) => reports.find((report) => report.id === id))
+      .filter((report): report is Report => Boolean(report));
+    const addableReports = reports.filter((report) => !activeChatReportIds.includes(report.id));
+    const filteredNotes = notesFilter === 'all' ? notes : notes.filter((note) => note.kind === notesFilter);
+    const reportLabel = (report: Report) =>
+      `${report.report_type === 'codir_note' ? 'Note CODIR' : 'Analyse'} du ${formatShortDate(report.created_at)}`;
+    const NOTE_FILTERS: Array<{ id: typeof notesFilter; label: string }> = [
+      { id: 'all', label: 'Toutes' },
+      { id: 'note', label: 'Notes' },
+      { id: 'detail', label: 'Détails' },
+      { id: 'definition', label: 'Définitions' },
+    ];
+
+    return (
+      <div className="searches-view">
+        <section className="chat-panel" aria-label="Interroger la veille">
+          <div className="chat-panel-header">
+            <h1>Interroger la veille</h1>
+            <div className="chat-scope">
+              <span className="chat-scope-label">Rapports consultés :</span>
+              {chatReports.map((report) => (
+                <span key={report.id} className="scope-chip">
+                  {reportLabel(report)}
+                  <button
+                    type="button"
+                    aria-label={`Retirer ${reportLabel(report)}`}
+                    onClick={() => removeChatReport(report.id)}
+                  >
+                    <X size={13} />
+                  </button>
+                </span>
               ))}
-              {chatLoading && (
-                <div className="chat-message chat-message-assistant chat-message-loading">
-                  <div className="chat-message-role">Assistant</div>
-                  <div className="typing-indicator" aria-label="Réponse en cours de génération">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
+              {chatReports.length === 0 && <span className="muted-text">les 3 derniers rapports</span>}
+              {chatReports.length < CHAT_MAX_REPORTS && addableReports.length > 0 && (
+                <div className="scope-add">
+                  <button
+                    type="button"
+                    className="scope-add-button"
+                    aria-expanded={chatReportPickerOpen}
+                    onClick={() => setChatReportPickerOpen((open) => !open)}
+                  >
+                    <Plus size={13} /> Ajouter
+                  </button>
+                  {chatReportPickerOpen && (
+                    <ul className="scope-picker" role="listbox" aria-label="Ajouter un rapport">
+                      {addableReports.slice(0, 20).map((report) => (
+                        <li key={report.id}>
+                          <button type="button" onClick={() => addChatReport(report.id)}>
+                            {reportLabel(report)}
+                            <span>{formatReportTime(report.created_at)}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               )}
-            </>
+            </div>
+          </div>
+
+          <div className="chat-history">
+            {chatHistory.length === 0 && !chatLoading && (
+              <div className="chat-empty">
+                <p>Posez une question sur les rapports sélectionnés, ou partez d’une suggestion ci-dessous.</p>
+              </div>
+            )}
+            {chatHistory.map((message, index) => {
+              if (message.role === 'user') {
+                return (
+                  <div key={message.id} className="chat-bubble chat-bubble-user">
+                    {message.content}
+                  </div>
+                );
+              }
+              const previous = chatHistory[index - 1];
+              const question = previous?.role === 'user' ? previous.content : '';
+              const sources = (message.report_ids ?? [])
+                .map((id) => reports.find((report) => report.id === id))
+                .filter((report): report is Report => Boolean(report));
+              return (
+                <div key={message.id} className="chat-answer">
+                  <span className="brand-leaf brand-leaf-sm" aria-hidden="true">
+                    <span className="brand-leaf-quarter" />
+                    <span className="brand-leaf-petal" />
+                  </span>
+                  <div className="chat-bubble chat-bubble-assistant">
+                    <div className="markdown-body">{renderMarkdown(message.content)}</div>
+                    {sources.length > 0 && (
+                      <div className="chat-sources">
+                        <span>Sources :</span>
+                        {sources.map((report) => (
+                          <button key={report.id} type="button" onClick={() => openReport(report.id)}>
+                            {reportLabel(report)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="chat-answer-actions">
+                      <button
+                        type="button"
+                        onClick={() => handleSaveAnswerAsNote(message, question)}
+                        disabled={savedAnswerIds.has(message.id)}
+                      >
+                        <NotebookPen size={14} />
+                        {savedAnswerIds.has(message.id) ? 'Enregistrée' : 'Enregistrer en note'}
+                      </button>
+                      <button type="button" onClick={() => handleCopyAnswer(message)}>
+                        <Copy size={14} />
+                        {copiedMessageId === message.id ? 'Copiée' : 'Copier'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {chatLoading && (
+              <div className="typing-petals" aria-label="Réponse en cours de génération">
+                <span />
+                <span />
+                <span />
+              </div>
+            )}
+          </div>
+
+          <div className="chat-composer">
+            <div className="chat-suggestions">
+              {CHAT_SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  onClick={() => handleAskChat(suggestion)}
+                  disabled={chatLoading}
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+            <div className="chat-input-row">
+              <label htmlFor="chat-question">
+                Votre question
+                <textarea
+                  id="chat-question"
+                  rows={2}
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault();
+                      handleAskChat();
+                    }
+                  }}
+                  placeholder="Posez une question sur un rapport, un outil ou une technologie…"
+                />
+              </label>
+              <button
+                type="button"
+                className="btn btn-primary btn-lg"
+                onClick={() => handleAskChat()}
+                disabled={chatLoading || !chatInput.trim()}
+              >
+                {chatLoading ? 'Recherche…' : 'Envoyer'}
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <aside className="searches-notes" aria-label="Mes notes">
+          <div className="searches-notes-header">
+            <h2>Mes notes</h2>
+            <span>
+              {notes.length} note{notes.length > 1 ? 's' : ''}
+            </span>
+          </div>
+          <div className="notes-filter" role="group" aria-label="Filtrer par type">
+            {NOTE_FILTERS.map((filter) => (
+              <button
+                key={filter.id}
+                type="button"
+                aria-pressed={notesFilter === filter.id}
+                onClick={() => setNotesFilter(filter.id)}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+          {filteredNotes.length > 0 ? (
+            <div className="report-notes-list">
+              {filteredNotes.map((note) => renderNoteCard(note, { compact: true, showReport: true }))}
+            </div>
           ) : (
-            <p className="muted-text">Aucune recherche pour l’instant.</p>
+            <p className="muted-text">Aucune note de ce type.</p>
           )}
-        </div>
-        <div className="chat-input-row">
-          <label htmlFor="chat-question" className="visually-hidden">Votre question</label>
-          <textarea
-            id="chat-question"
-            value={chatInput}
-            onChange={(event) => setChatInput(event.target.value)}
-            placeholder="Posez une question sur un rapport, un outil, un provider ou une technologie…"
-          />
-          <button type="button" className="btn btn-primary" onClick={handleAskChat} disabled={chatLoading}>
-            {chatLoading ? 'Recherche en cours…' : 'Envoyer'}
-          </button>
-        </div>
+        </aside>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="app-frame">
