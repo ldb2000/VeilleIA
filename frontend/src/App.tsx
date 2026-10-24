@@ -54,6 +54,14 @@ type ProjectSynthesisCacheEntry = {
   project: string;
   content: string;
   generatedAt: number;
+  reportCount?: number;
+};
+
+type WeeklyRadarItem = {
+  text: string;
+  tone: 'test' | 'watch';
+  reportId: number;
+  createdAt: string;
 };
 
 type ReportSectionKind = 'tldr' | 'radar' | 'news' | 'generic';
@@ -83,7 +91,8 @@ type NewsField = {
   value: string;
 };
 
-const PROJECT_SYNTHESIS_CACHE_KEY = 'veilleia.projectSynthesis.v1';
+const PROJECT_SYNTHESIS_CACHE_KEY = 'veilleia.projectSynthesis.v2';
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const PROJECT_SYNTHESIS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const TEAMS_SHARE_URL =
   'https://teams.microsoft.com/l/chat/19:f5f9775520064c0a932a3a93567c0c6b@thread.v2/conversations?context=%7B%22contextType%22%3A%22chat%22%7D';
@@ -292,7 +301,7 @@ function App() {
   const [newsSaving, setNewsSaving] = useState<number | null>(null);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
-  const [projectSynthesis, setProjectSynthesis] = useState<{ project: string; content: string } | null>(null);
+  const [projectSynthesis, setProjectSynthesis] = useState<ProjectSynthesisCacheEntry | null>(null);
   const [projectSynthesisLoading, setProjectSynthesisLoading] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<number | null>(null);
@@ -517,13 +526,13 @@ function App() {
     }
   };
 
-  const handleGenerateCodirNote = async () => {
-    if (!selectedReport || selectedReport.report_type === 'codir_note') {
+  const handleGenerateCodirNote = async (source: Report | null = selectedReport) => {
+    if (!source || source.report_type === 'codir_note') {
       return;
     }
     setCodirLoading(true);
     try {
-      const newReport = await generateCodirNote(selectedReport.id);
+      const newReport = await generateCodirNote(source.id);
       setReports((current) => [newReport, ...current]);
       setSelectedReport(newReport);
       setCurrentView('reports');
@@ -702,10 +711,10 @@ function App() {
       return;
     }
 
-    const reportIds = reports
-      .filter((report) => report.content.toLowerCase().includes(project.toLowerCase()))
-      .slice(0, 3)
-      .map((report) => report.id);
+    const matchingReports = reports.filter((report) =>
+      report.content.toLowerCase().includes(project.toLowerCase()),
+    );
+    const reportIds = matchingReports.slice(0, 3).map((report) => report.id);
 
     if (reportIds.length === 0) {
       return;
@@ -714,10 +723,15 @@ function App() {
     setProjectSynthesisLoading(project);
     try {
       const result = await chatWithReports(
-        `Fais une synthèse courte sur ${project} à partir des rapports fournis. Réponds en 4 points maximum : nouveauté, intérêt pour APRIL, risque ou limite, action recommandée.`,
+        `Fais une synthèse courte sur ${project} à partir des rapports fournis. Réponds uniquement avec ces 4 puces, une ligne chacune : « - **Nouveauté** : … », « - **Intérêt pour APRIL** : … », « - **Risque ou limite** : … », « - **Action recommandée** : … ».`,
         reportIds,
       );
-      const nextSynthesis = { project, content: result.answer, generatedAt: Date.now() };
+      const nextSynthesis = {
+        project,
+        content: result.answer,
+        generatedAt: Date.now(),
+        reportCount: reportIds.length,
+      };
       setProjectSynthesis(nextSynthesis);
       writeProjectSynthesisCache({
         ...cache,
@@ -1119,7 +1133,7 @@ function App() {
                 <div className="action-buttons">
                   {selectedReport.report_type !== 'codir_note' ? (
                     <>
-                      <button type="button" className="btn btn-primary" onClick={handleGenerateCodirNote} disabled={codirLoading}>
+                      <button type="button" className="btn btn-primary" onClick={() => handleGenerateCodirNote()} disabled={codirLoading}>
                         <FileText size={16} />
                         {codirLoading ? 'Génération CODIR…' : 'Générer la note CODIR'}
                       </button>
@@ -1276,76 +1290,233 @@ function App() {
     </div>
   );
 
-  const renderDashboardView = () => (
-    <div className="dashboard-view">
-      <div className="dashboard-grid">
-        <div className="dashboard-card">
-          <span className="dashboard-card-label">Rapports</span>
-          <strong>{reports.length}</strong>
-        </div>
-        <div className="dashboard-card">
-          <span className="dashboard-card-label">Nouveautés détaillées</span>
-          <strong>{majorItemsCount}</strong>
-        </div>
-        <div className="dashboard-card">
-          <span className="dashboard-card-label">Sources référencées</span>
-          <strong>{linkedCount}</strong>
-        </div>
-        <div className="dashboard-card">
-          <span className="dashboard-card-label">News sauvegardées</span>
-          <strong>{savedNews.length}</strong>
-        </div>
-      </div>
-      <div className="dashboard-panels">
-        <section className="dashboard-panel">
-          <h2 className="section-header">Projets suivis</h2>
-          {innovativeProjects.length > 0 ? (
+  const formatRelativeTime = (timestamp: number) => {
+    const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+    if (minutes < 1) {
+      return 'à l’instant';
+    }
+    if (minutes < 60) {
+      return `il y a ${minutes} min`;
+    }
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) {
+      return `il y a ${hours} h`;
+    }
+    return `il y a ${Math.round(hours / 24)} j`;
+  };
+
+  const formatShortDate = (value: string) =>
+    new Date(value).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+
+  const renderDashboardView = () => {
+    const watchReports = reports.filter((report) => report.report_type === 'technical_watch');
+    const latestWatch = watchReports[0] ?? null;
+    const latestParsed = latestWatch ? parseReportContent(latestWatch.content) : null;
+    const latestTldr =
+      latestParsed?.sections.find((section) => section.kind === 'tldr')?.bullets.slice(0, 3) ?? [];
+    const latestCodir = latestWatch
+      ? reports.find(
+          (report) =>
+            report.report_type === 'codir_note' &&
+            report.date === latestWatch.date &&
+            new Date(report.created_at) >= new Date(latestWatch.created_at),
+        ) ?? null
+      : null;
+
+    const weekStart = Date.now() - WEEK_MS;
+    const isThisWeek = (report: Report) => new Date(report.created_at).getTime() >= weekStart;
+    const weekReportsCount = reports.filter(isThisWeek).length;
+    const weeklyRadar: WeeklyRadarItem[] = watchReports.filter(isThisWeek).flatMap((report) => {
+      const radar = parseReportContent(report.content)?.sections.find((section) => section.kind === 'radar');
+      if (!radar) {
+        return [];
+      }
+      return radar.subsections.flatMap((column) => {
+        const tone = radarTone(column.title);
+        if (tone === 'ignore') {
+          return [];
+        }
+        return column.bullets.map((text) => ({
+          text,
+          tone: tone === 'test' ? 'test' : 'watch',
+          reportId: report.id,
+          createdAt: report.created_at,
+        }));
+      });
+    });
+    const toTestCount = weeklyRadar.filter((item) => item.tone === 'test').length;
+    const radarPreview = [
+      ...weeklyRadar.filter((item) => item.tone === 'test'),
+      ...weeklyRadar.filter((item) => item.tone === 'watch'),
+    ].slice(0, 6);
+    const detailNotes = notes.filter((note) => note.kind === 'detail').length;
+    const definitionNotes = notes.filter((note) => note.kind === 'definition').length;
+
+    const synthesisFields = projectSynthesis
+      ? collectBullets(projectSynthesis.content.split('\n')).map(splitNewsField)
+      : [];
+    const labelledSynthesis = synthesisFields.filter((field) => field.label);
+
+    return (
+      <div className="dashboard-view">
+        <section className="dashboard-hero">
+          <span className="dashboard-hero-leaf" aria-hidden="true" />
+          {latestWatch ? (
             <>
-              <div className="tag-cloud">
-                {innovativeProjects.map((project) => (
-                  <button
-                    type="button"
-                    key={project}
-                    className={`project-tag ${projectSynthesis?.project === project ? 'active' : ''}`}
-                    onClick={() => handleProjectSynthesis(project)}
-                    disabled={projectSynthesisLoading !== null}
-                    aria-pressed={projectSynthesis?.project === project}
-                  >
-                    {projectSynthesisLoading === project ? 'Synthèse…' : project}
-                  </button>
-                ))}
-              </div>
-              {projectSynthesis && (
-                <div className="project-synthesis">
-                  <div className="project-synthesis-header">
-                    <span>Synthèse</span>
-                    <strong>{projectSynthesis.project}</strong>
-                  </div>
-                  {renderMarkdown(projectSynthesis.content)}
+              <div className="dashboard-hero-text">
+                <div className="dashboard-hero-kicker">
+                  Dernière veille · {formatReportDay(latestWatch.created_at)}, {formatReportTime(latestWatch.created_at)}
                 </div>
-              )}
+                <h1>L’essentiel du jour</h1>
+                {latestTldr.length > 0 ? (
+                  <ul className="hero-petals">
+                    {latestTldr.map((item, index) => (
+                      <li key={index}>{renderMarkdown(item)}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="dashboard-hero-empty">
+                    Ce rapport ne contient pas de TL;DR. Ouvrez-le pour le lire en entier.
+                  </p>
+                )}
+              </div>
+              <div className="dashboard-hero-actions">
+                <button type="button" className="btn btn-tertiary btn-lg" onClick={() => openReport(latestWatch.id)}>
+                  Lire le rapport
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-on-dark btn-lg"
+                  onClick={() =>
+                    latestCodir ? openReport(latestCodir.id) : handleGenerateCodirNote(latestWatch)
+                  }
+                  disabled={codirLoading}
+                >
+                  {latestCodir ? 'Ouvrir la note CODIR' : codirLoading ? 'Génération CODIR…' : 'Note CODIR'}
+                </button>
+              </div>
             </>
           ) : (
-            <p className="muted-text">Aucun projet suivi détecté pour l’instant.</p>
-          )}
-        </section>
-        <section className="dashboard-panel">
-          <h2 className="section-header">Dernier rapport</h2>
-          {selectedReport ? (
-            <>
-              <p className="dashboard-latest-title">{getReportTitle(selectedReport)}</p>
-              <p className="dashboard-latest-meta">{formatReportTimestamp(selectedReport.created_at)}</p>
-              <button type="button" onClick={() => setCurrentView('reports')} className="btn btn-secondary">
-                Ouvrir le rapport
+            <div className="dashboard-hero-text">
+              <h1>Bienvenue dans la veille IA</h1>
+              <p className="dashboard-hero-empty">
+                Aucun rapport pour l’instant. Lancez une première veille pour remplir le tableau de bord.
+              </p>
+              <button type="button" className="btn btn-tertiary btn-lg" onClick={handleTrigger} disabled={loading}>
+                {loading ? 'Analyse en cours…' : 'Lancer la veille'}
               </button>
-            </>
-          ) : (
-            <p className="muted-text">Aucun rapport disponible pour l’instant.</p>
+            </div>
           )}
         </section>
+
+        <section className="dashboard-grid" aria-label="Indicateurs">
+          <div className="dashboard-card">
+            <span className="dashboard-card-label">Rapports générés</span>
+            <strong>{reports.length}</strong>
+            <span className={`dashboard-card-context ${weekReportsCount > 0 ? 'positive' : ''}`}>
+              {weekReportsCount > 0 ? `+${weekReportsCount} cette semaine` : 'aucun cette semaine'}
+            </span>
+          </div>
+          <div className="dashboard-card">
+            <span className="dashboard-card-label">À tester maintenant</span>
+            <strong>{toTestCount}</strong>
+            <span className="dashboard-card-context">sur les 7 derniers jours</span>
+          </div>
+          <div className="dashboard-card">
+            <span className="dashboard-card-label">Sources référencées</span>
+            <strong>{linkedCount}</strong>
+            <span className="dashboard-card-context">
+              {majorItemsCount} nouveauté{majorItemsCount > 1 ? 's' : ''} détaillée{majorItemsCount > 1 ? 's' : ''}
+            </span>
+          </div>
+          <div className="dashboard-card">
+            <span className="dashboard-card-label">Notes enregistrées</span>
+            <strong>{notes.length}</strong>
+            <span className="dashboard-card-context">
+              {detailNotes} détail{detailNotes > 1 ? 's' : ''} · {definitionNotes} définition{definitionNotes > 1 ? 's' : ''}
+            </span>
+          </div>
+        </section>
+
+        <div className="dashboard-panels">
+          <section className="dashboard-panel">
+            <h2 className="section-header">Radar de la semaine</h2>
+            {radarPreview.length > 0 ? (
+              <ul className="weekly-radar">
+                {radarPreview.map((item, index) => (
+                  <li key={`${item.reportId}-${index}`}>
+                    <span className={`badge ${item.tone === 'test' ? 'badge-green solid' : 'badge-orange'}`}>
+                      {item.tone === 'test' ? 'Tester' : 'Surveiller'}
+                    </span>
+                    <button type="button" className="weekly-radar-text" onClick={() => openReport(item.reportId)}>
+                      {stripEmphasis(item.text).replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')}
+                    </button>
+                    <span className="weekly-radar-date">{formatShortDate(item.createdAt)}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted-text">Aucun élément « à tester » ou « à surveiller » sur les 7 derniers jours.</p>
+            )}
+            <button type="button" className="link-button" onClick={() => setCurrentView('reports')}>
+              Voir tous les rapports
+            </button>
+          </section>
+
+          <section className="dashboard-panel">
+            <h2 className="section-header">Projets suivis</h2>
+            {innovativeProjects.length > 0 ? (
+              <>
+                <div className="tag-cloud">
+                  {innovativeProjects.map((project) => (
+                    <button
+                      type="button"
+                      key={project}
+                      className={`project-tag ${projectSynthesis?.project === project ? 'active' : ''}`}
+                      onClick={() => handleProjectSynthesis(project)}
+                      disabled={projectSynthesisLoading !== null}
+                      aria-pressed={projectSynthesis?.project === project}
+                    >
+                      {projectSynthesisLoading === project ? 'Synthèse…' : project}
+                    </button>
+                  ))}
+                </div>
+                {projectSynthesis ? (
+                  <div className="project-synthesis">
+                    <div className="project-synthesis-header">
+                      <strong>Synthèse · {projectSynthesis.project}</strong>
+                      <span>
+                        {projectSynthesis.reportCount
+                          ? `${projectSynthesis.reportCount} rapport${projectSynthesis.reportCount > 1 ? 's' : ''} · `
+                          : ''}
+                        mise à jour {formatRelativeTime(projectSynthesis.generatedAt)}
+                      </span>
+                    </div>
+                    {labelledSynthesis.length >= 2 ? (
+                      <dl className="synthesis-grid">
+                        {labelledSynthesis.map((field, index) => (
+                          <div key={index}>
+                            <dt>{field.label}</dt>
+                            <dd>{renderMarkdown(field.value)}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    ) : (
+                      <div className="markdown-body">{renderMarkdown(projectSynthesis.content)}</div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="muted-text">Choisissez un projet pour obtenir sa synthèse à partir des derniers rapports.</p>
+                )}
+              </>
+            ) : (
+              <p className="muted-text">Aucun projet suivi détecté pour l’instant.</p>
+            )}
+          </section>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderNotesView = () => (
     <div className="notes-view">
