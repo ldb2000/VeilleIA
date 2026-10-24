@@ -15,6 +15,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./backend/app:/app/app
+      # Authentification Codex (`codex login` sur l'hôte) ; en écriture pour le rafraîchissement du jeton.
+      - ${HOME}/.codex:/root/.codex
       - ${HOME}/.gemini:/root/.gemini:ro
     restart: unless-stopped
 

@@ -50,7 +50,9 @@ class NewsItem(Base):
     __tablename__ = "news_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    report_id = Column(Integer, index=True)
+    # NULL quand le rapport d'origine a été supprimé (news sauvegardée conservée).
+    report_id = Column(Integer, index=True, nullable=True)
+    source_report_date = Column(String, nullable=True)
     position = Column(Integer, default=0)
     title = Column(String)
     maturity = Column(String, nullable=True)

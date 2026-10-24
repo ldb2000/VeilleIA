@@ -144,7 +144,7 @@ export const downloadReportDocx = async (id: number): Promise<Blob> => {
 
 export interface NewsItem {
   id: number;
-  report_id: number;
+  report_id: number | null;
   position: number;
   title: string;
   maturity?: string | null;

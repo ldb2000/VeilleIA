@@ -75,7 +75,7 @@ class ChatMessage(BaseModel):
 
 class NewsItem(BaseModel):
     id: int
-    report_id: int
+    report_id: Optional[int] = None
     position: int
     title: str
     maturity: Optional[str] = None

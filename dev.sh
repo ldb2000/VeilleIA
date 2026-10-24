@@ -17,11 +17,18 @@ if [ ! -f "backend/.env" ]; then
     if [ -f ".env.example" ]; then
         echo -e "${BLUE}[*] Création de backend/.env à partir de .env.example...${NC}"
         cp .env.example backend/.env
-        echo -e "${RED}[!] ATTENTION : Vous devez configurer votre GEMINI_API_KEY dans backend/.env${NC}"
+        echo -e "${RED}[!] ATTENTION : vérifiez LLM_PROVIDER dans backend/.env (codex par défaut, ou OPENROUTER_API_KEY)${NC}"
     else
         echo -e "${RED}[X] Erreur : .env.example introuvable. Impossible de configurer l'environnement.${NC}"
         exit 1
     fi
+fi
+
+# Vérification du fournisseur LLM
+LLM_PROVIDER_VALUE=$(grep -E '^LLM_PROVIDER=' backend/.env 2>/dev/null | tail -n 1 | cut -d '=' -f 2-)
+LLM_PROVIDER_VALUE=${LLM_PROVIDER_VALUE:-codex}
+if [ "$LLM_PROVIDER_VALUE" = "codex" ] && ! command -v codex >/dev/null 2>&1; then
+    echo -e "${YELLOW}[!] Codex CLI introuvable : installez-le avec 'npm install -g @openai/codex' puis 'codex login'.${NC}"
 fi
 
 # Fonction de nettoyage à l'arrêt du script

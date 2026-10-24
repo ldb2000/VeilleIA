@@ -3,6 +3,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from html import escape, unescape
@@ -11,7 +12,7 @@ from fastapi import FastAPI, Depends, HTTPException, Response, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
-from sqlalchemy import inspect, text
+from sqlalchemy import func, inspect, text
 from typing import List, Optional, Tuple
 from datetime import datetime
 from io import BytesIO
@@ -51,6 +52,25 @@ def ensure_reports_schema() -> None:
 
 
 ensure_reports_schema()
+
+
+def ensure_news_items_schema() -> None:
+    inspector = inspect(engine)
+    if "news_items" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("news_items")}
+    with engine.begin() as connection:
+        if "source_report_date" not in columns:
+            connection.execute(text("ALTER TABLE news_items ADD COLUMN source_report_date VARCHAR"))
+            connection.execute(
+                text(
+                    "UPDATE news_items SET source_report_date = "
+                    "(SELECT reports.date FROM reports WHERE reports.id = news_items.report_id)"
+                )
+            )
+
+
+ensure_news_items_schema()
 
 
 def serialize_report_ids(report_ids: Optional[list[int]]) -> Optional[str]:
@@ -248,6 +268,9 @@ def get_auth_debug_info() -> dict:
     creds_path = Path.home() / ".gemini" / "oauth_creds.json"
     gemini_cli_path = shutil.which("gemini")
     info = {
+        "llm_provider": os.getenv("LLM_PROVIDER", "codex"),
+        "codex_path": shutil.which(CODEX_BIN),
+        "has_openrouter_api_key": bool(os.getenv("OPENROUTER_API_KEY")),
         "has_oauth_file": creds_path.exists(),
         "oauth_path": str(creds_path),
         "has_gemini_api_key": bool(os.getenv("GEMINI_API_KEY")),
@@ -359,6 +382,173 @@ def generate_gemini_content(prompt: str, timeout_seconds: float = DEFAULT_GEMINI
     if should_use_gemini_cli_backend():
         return generate_gemini_content_with_cli(prompt, timeout_seconds=timeout_seconds)
     return generate_gemini_content_with_sdk(prompt, timeout_seconds=timeout_seconds)
+
+
+# ---------------------------------------------------------------------------
+# Fournisseurs LLM : codex (défaut), openrouter, gemini.
+# ---------------------------------------------------------------------------
+
+SUPPORTED_LLM_PROVIDERS = ("codex", "openrouter", "gemini")
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", str(DEFAULT_GEMINI_TIMEOUT_SECONDS)))
+LLM_REPORT_TIMEOUT_SECONDS = float(
+    os.getenv("LLM_REPORT_TIMEOUT_SECONDS", str(max(REPORT_GEMINI_TIMEOUT_SECONDS, 600)))
+)
+CODEX_BIN = os.getenv("CODEX_BIN", "codex")
+OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on", "oui"}
+
+
+def get_llm_provider() -> str:
+    provider = os.getenv("LLM_PROVIDER", "codex").strip().lower()
+    if provider not in SUPPORTED_LLM_PROVIDERS:
+        raise RuntimeError(
+            f"LLM_PROVIDER={provider!r} inconnu. Valeurs possibles : {', '.join(SUPPORTED_LLM_PROVIDERS)}."
+        )
+    return provider
+
+
+def describe_llm_backend() -> str:
+    provider = get_llm_provider()
+    if provider == "codex":
+        return f"codex model={os.getenv('CODEX_MODEL') or '<défaut codex>'}"
+    if provider == "openrouter":
+        return f"openrouter model={os.getenv('OPENROUTER_MODEL', 'openrouter/auto')}"
+    backend_kind = "cli" if should_use_gemini_cli_backend() else "sdk"
+    model = resolve_cli_model_name() if backend_kind == "cli" else DEFAULT_GEMINI_MODEL
+    return f"gemini backend={backend_kind} model={model}"
+
+
+def llm_supports_web_search() -> bool:
+    provider = get_llm_provider()
+    if provider == "codex":
+        return env_flag("CODEX_WEB_SEARCH", True)
+    if provider == "openrouter":
+        return env_flag("OPENROUTER_WEB_SEARCH", False)
+    # La CLI Gemini embarque la recherche Google ; le SDK non.
+    return should_use_gemini_cli_backend()
+
+
+def ensure_llm_ready() -> None:
+    """Vérifie la configuration du fournisseur actif avant un appel."""
+    provider = get_llm_provider()
+    if provider == "codex":
+        if not shutil.which(CODEX_BIN):
+            raise RuntimeError(
+                f"Binaire Codex introuvable ({CODEX_BIN}). Installez-le avec `npm install -g @openai/codex` "
+                "puis connectez-vous avec `codex login`, ou définissez CODEX_BIN."
+            )
+        return
+    if provider == "openrouter":
+        if not os.getenv("OPENROUTER_API_KEY"):
+            raise RuntimeError("OPENROUTER_API_KEY manquant dans backend/.env.")
+        return
+    load_gemini_auth()
+
+
+def build_codex_command(output_path: str, web_search: bool) -> list[str]:
+    cmd = [
+        CODEX_BIN,
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--sandbox",
+        "read-only",
+        "--color",
+        "never",
+        "--output-last-message",
+        output_path,
+        "-c",
+        f'web_search="{"live" if web_search else "disabled"}"',
+    ]
+    model = os.getenv("CODEX_MODEL")
+    if model:
+        cmd += ["--model", model]
+    reasoning_effort = os.getenv("CODEX_REASONING_EFFORT")
+    if reasoning_effort:
+        cmd += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
+    # Le prompt passe par stdin : les rapports dépassent la taille maximale d'un argument.
+    cmd.append("-")
+    return cmd
+
+
+def generate_codex_content(prompt: str, timeout_seconds: float, web_search: bool = False) -> str:
+    with tempfile.TemporaryDirectory(prefix="veille-codex-") as workdir:
+        output_path = os.path.join(workdir, "last_message.md")
+        cmd = build_codex_command(output_path, web_search)
+        try:
+            completed = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+                cwd=workdir,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise TimeoutError(f"codex exec a dépassé le délai de {timeout_seconds}s") from e
+
+        stderr = (completed.stderr or "").strip()
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"codex exec a échoué (code {completed.returncode}) : {(stderr or completed.stdout or '')[-1500:]}"
+            )
+        try:
+            content = Path(output_path).read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            content = ""
+        if not content:
+            raise RuntimeError(f"codex exec n'a renvoyé aucune réponse. stderr={stderr[-1000:] or '<vide>'}")
+        return content
+
+
+def generate_openrouter_content(prompt: str, timeout_seconds: float, web_search: bool = False) -> str:
+    payload: dict = {
+        "model": os.getenv("OPENROUTER_MODEL", "openrouter/auto"),
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if web_search and env_flag("OPENROUTER_WEB_SEARCH", False):
+        # Plugin web d'OpenRouter (facturé en plus) : sans lui, pas de recherche internet.
+        payload["plugins"] = [{"id": "web"}]
+    headers = {
+        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY', '')}",
+        "Content-Type": "application/json",
+        "X-Title": "Veille IA",
+    }
+    response = httpx.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=timeout_seconds)
+    if response.status_code >= 400:
+        raise RuntimeError(f"OpenRouter a répondu {response.status_code} : {response.text[:1000]}")
+    data = response.json()
+    if data.get("error"):
+        raise RuntimeError(f"Erreur OpenRouter : {data['error']}")
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"Réponse OpenRouter inattendue : {str(data)[:1000]}") from e
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("OpenRouter a renvoyé une réponse vide.")
+    return content
+
+
+def generate_llm_content(
+    prompt: str,
+    timeout_seconds: float = LLM_TIMEOUT_SECONDS,
+    web_search: bool = False,
+) -> str:
+    """Point d'entrée unique vers le fournisseur LLM configuré (LLM_PROVIDER)."""
+    provider = get_llm_provider()
+    if provider == "codex":
+        return generate_codex_content(prompt, timeout_seconds, web_search=web_search)
+    if provider == "openrouter":
+        return generate_openrouter_content(prompt, timeout_seconds, web_search=web_search)
+    response = generate_gemini_content(prompt, timeout_seconds=timeout_seconds)
+    return response if isinstance(response, str) else response.text
 
 app = FastAPI(title="AI Watch API")
 
@@ -1070,6 +1260,7 @@ def sync_news_items(db: Session, report: models.Report) -> None:
         db.add(
             models.NewsItem(
                 report_id=report.id,
+                source_report_date=report.date,
                 position=item["position"],
                 title=item["title"],
                 maturity=item["maturity"],
@@ -1102,12 +1293,12 @@ backfill_news_items()
 
 def serialize_news_item(item: models.NewsItem, report_dates: dict[int, str]) -> schemas.NewsItem:
     payload = schemas.NewsItem.model_validate(item)
-    payload.report_date = report_dates.get(item.report_id)
+    payload.report_date = report_dates.get(item.report_id) or item.source_report_date
     return payload
 
 
 def news_report_dates(db: Session, items: list[models.NewsItem]) -> dict[int, str]:
-    report_ids = {item.report_id for item in items}
+    report_ids = {item.report_id for item in items if item.report_id is not None}
     if not report_ids:
         return {}
     rows = db.query(models.Report.id, models.Report.date).filter(models.Report.id.in_(report_ids)).all()
@@ -1162,6 +1353,12 @@ def update_news_item(
         raise HTTPException(status_code=404, detail="News not found")
     item.saved = payload.saved
     item.saved_at = datetime.utcnow() if payload.saved else None
+    if not payload.saved and item.report_id is None:
+        # News orpheline retirée : plus aucune raison de la garder.
+        result = serialize_news_item(item, {})
+        db.delete(item)
+        db.commit()
+        return result
     db.commit()
     db.refresh(item)
     return serialize_news_item(item, news_report_dates(db, [item]))
@@ -1190,6 +1387,16 @@ def delete_report(report_id: int, db: Session = Depends(get_db), _=Depends(verif
     db.query(models.NewsItem).filter(
         models.NewsItem.report_id == report_id, models.NewsItem.saved.is_(False)
     ).delete(synchronize_session=False)
+    # Les news sauvegardées sont détachées : SQLite peut réattribuer cet id au prochain rapport.
+    db.query(models.NewsItem).filter(models.NewsItem.report_id == report_id).update(
+        {
+            models.NewsItem.report_id: None,
+            models.NewsItem.source_report_date: func.coalesce(
+                models.NewsItem.source_report_date, db_report.date
+            ),
+        },
+        synchronize_session=False,
+    )
     db.delete(db_report)
     db.commit()
     return Response(status_code=204)
@@ -1231,8 +1438,8 @@ Rapport :
 """
 
     try:
-        load_gemini_auth()
-        response = generate_gemini_content(summary_prompt)
+        ensure_llm_ready()
+        response = generate_llm_content(summary_prompt)
         content = response if isinstance(response, str) else response.text
         db_summary = db.query(models.ReportSummary).filter(models.ReportSummary.report_id == report_id).first()
         if db_summary is None:
@@ -1283,8 +1490,8 @@ Rapport complet :
 """
 
     try:
-        load_gemini_auth()
-        response = generate_gemini_content(detail_prompt)
+        ensure_llm_ready()
+        response = generate_llm_content(detail_prompt)
         content = response if isinstance(response, str) else response.text
         return {"detail": content}
     except Exception as e:
@@ -1323,8 +1530,8 @@ Rapport complet :
 """
 
     try:
-        load_gemini_auth()
-        response = generate_gemini_content(definition_prompt)
+        ensure_llm_ready()
+        response = generate_llm_content(definition_prompt)
         content = response if isinstance(response, str) else response.text
         return {"definition": content}
     except Exception as e:
@@ -1428,8 +1635,8 @@ Rapports de contexte :
 """
 
     try:
-        load_gemini_auth()
-        response = generate_gemini_content(chat_prompt)
+        ensure_llm_ready()
+        response = generate_llm_content(chat_prompt)
         content = response if isinstance(response, str) else response.text
         db.add(
             models.ChatMessage(
@@ -1447,20 +1654,21 @@ Rapports de contexte :
 @app.post("/reports/trigger", response_model=schemas.Report)
 async def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token)):
     try:
-        load_gemini_auth()
-        backend_kind = "cli" if should_use_gemini_cli_backend() else "sdk"
-        active_model = resolve_cli_model_name() if backend_kind == "cli" else DEFAULT_GEMINI_MODEL
-        print(
-            f"Sending request to Gemini backend={backend_kind} model={active_model} "
-            f"timeout={REPORT_GEMINI_TIMEOUT_SECONDS}s"
-        )
+        ensure_llm_ready()
+        if not llm_supports_web_search():
+            print(
+                "ATTENTION : le fournisseur LLM actif n'a pas accès à internet ; "
+                "la veille reposera sur ses connaissances, sans actualité des dernières 24h."
+            )
+        print(f"Sending report request to {describe_llm_backend()} timeout={LLM_REPORT_TIMEOUT_SECONDS}s")
         start = time.perf_counter()
-        response = generate_gemini_content(
+        response = generate_llm_content(
             TECHNICAL_PROMPT,
-            timeout_seconds=REPORT_GEMINI_TIMEOUT_SECONDS,
+            timeout_seconds=LLM_REPORT_TIMEOUT_SECONDS,
+            web_search=True,
         )
         elapsed = time.perf_counter() - start
-        print(f"Gemini response received in {elapsed:.2f}s")
+        print(f"LLM response received in {elapsed:.2f}s")
         content = response if isinstance(response, str) else response.text
         
         db_report = models.Report(
@@ -1505,14 +1713,9 @@ def generate_codir_note(report_id: int, db: Session = Depends(get_db), _=Depends
     prompt = CODIR_NOTE_PROMPT.format(watch_document="\n\n".join(watch_parts))
 
     try:
-        load_gemini_auth()
-        backend_kind = "cli" if should_use_gemini_cli_backend() else "sdk"
-        active_model = resolve_cli_model_name() if backend_kind == "cli" else DEFAULT_GEMINI_MODEL
-        print(
-            f"Sending CODIR note request to Gemini backend={backend_kind} model={active_model} "
-            f"timeout={REPORT_GEMINI_TIMEOUT_SECONDS}s"
-        )
-        response = generate_gemini_content(prompt, timeout_seconds=REPORT_GEMINI_TIMEOUT_SECONDS)
+        ensure_llm_ready()
+        print(f"Sending CODIR note request to {describe_llm_backend()} timeout={LLM_REPORT_TIMEOUT_SECONDS}s")
+        response = generate_llm_content(prompt, timeout_seconds=LLM_REPORT_TIMEOUT_SECONDS)
         content = response if isinstance(response, str) else response.text
 
         db_report = models.Report(

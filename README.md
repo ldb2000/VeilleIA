@@ -1,11 +1,11 @@
 # AI Technical Watch (Veille IA)
 
-A web application that automatically monitors AI news from major industry players (OpenAI, Anthropic, Google, etc.), analyzes them with a technical focus using Gemini, and provides a blog-like interface with PDF export.
+A web application that automatically monitors AI news from major industry players (OpenAI, Anthropic, Google, etc.), analyzes them with a technical focus using an LLM (Codex CLI by default, or OpenRouter / Gemini), and provides a blog-like interface with PDF export.
 
 ## Prerequisites
 - Node.js (v18+)
 - Python (3.9+)
-- Gemini API Key
+- Codex CLI (`npm install -g @openai/codex`, then `codex login`) — or an OpenRouter API key
 
 ## Setup
 
@@ -28,7 +28,7 @@ A web application that automatically monitors AI news from major industry player
      ```bash
      cp ../.env.example .env
      ```
-   - Edit `.env` and add your `GEMINI_API_KEY`.
+   - Edit `.env` and choose `LLM_PROVIDER` (`codex` by default; `openrouter` needs `OPENROUTER_API_KEY` and has no web search unless `OPENROUTER_WEB_SEARCH=true`).
 5. Start the FastAPI server:
    ```bash
    uvicorn app.main:app --reload
@@ -56,4 +56,4 @@ A web application that automatically monitors AI news from major industry player
 
 ## Tech Stack
 - **Frontend:** React, TypeScript, Vite, Vanilla CSS, React-Markdown, Lucide Icons.
-- **Backend:** FastAPI, SQLAlchemy, SQLite, Google Generative AI (Gemini), xhtml2pdf.
+- **Backend:** FastAPI, SQLAlchemy, SQLite, Codex CLI / OpenRouter / Gemini, ReportLab.

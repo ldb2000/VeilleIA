@@ -1309,7 +1309,9 @@ function App() {
       {savedNews.length > 0 ? (
         <div className="news-list">
           {savedNews.map((item) => {
-            const reportExists = reports.some((report) => report.id === item.report_id);
+            const sourceReportId = item.report_id;
+            const reportExists =
+              sourceReportId !== null && reports.some((report) => report.id === sourceReportId);
             return (
               <article key={item.id} className="news-card">
                 <header className="news-card-header">
@@ -1331,7 +1333,7 @@ function App() {
                 </header>
                 <div className="news-card-meta">
                   {reportExists ? (
-                    <button type="button" className="link-button" onClick={() => openReport(item.report_id)}>
+                    <button type="button" className="link-button" onClick={() => sourceReportId !== null && openReport(sourceReportId)}>
                       Analyse du {item.report_date ?? 'rapport'}
                     </button>
                   ) : (
