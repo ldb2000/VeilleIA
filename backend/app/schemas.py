@@ -18,9 +18,24 @@ class Report(ReportBase):
         from_attributes = True
 
 
+class ChatHistoryMessage(BaseModel):
+    role: str
+    content: str
+
+
 class ChatRequest(BaseModel):
     question: str
     report_ids: Optional[List[int]] = None
+    history: Optional[List[ChatHistoryMessage]] = None
+    web_search: bool = False
+    # False pour les appels techniques (synthèse projet) qui ne doivent pas apparaître dans l'historique.
+    persist: bool = True
+
+
+class LLMInfo(BaseModel):
+    provider: str
+    web_search: bool
+    backend: str
 
 
 class ChatResponse(BaseModel):

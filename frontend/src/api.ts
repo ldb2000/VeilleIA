@@ -98,11 +98,35 @@ export const getReportDefinition = async (id: number, selectedText: string): Pro
   return response.data;
 };
 
-export const chatWithReports = async (question: string, reportIds?: number[]): Promise<ChatAnswer> => {
+export interface ChatOptions {
+  history?: Array<Pick<ChatMessage, 'role' | 'content'>>;
+  webSearch?: boolean;
+  persist?: boolean;
+}
+
+export const chatWithReports = async (
+  question: string,
+  reportIds?: number[],
+  options: ChatOptions = {},
+): Promise<ChatAnswer> => {
   const response = await axios.post(`${API_URL}/chat`, {
     question,
     report_ids: reportIds,
+    history: options.history,
+    web_search: options.webSearch ?? false,
+    persist: options.persist ?? true,
   });
+  return response.data;
+};
+
+export interface LlmInfo {
+  provider: string;
+  web_search: boolean;
+  backend: string;
+}
+
+export const getLlmInfo = async (): Promise<LlmInfo> => {
+  const response = await axios.get(`${API_URL}/llm/info`);
   return response.data;
 };
 

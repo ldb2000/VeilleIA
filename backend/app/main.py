@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import func, inspect, text
 from typing import TYPE_CHECKING, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 
 import httpx
@@ -96,17 +96,97 @@ def deserialize_report_ids(report_ids_raw: Optional[str]) -> Optional[list[int]]
     return value if isinstance(value, list) else None
 
 
+CHAT_REPORT_CONTEXT_MAX_CHARS = int(os.getenv("CHAT_REPORT_CONTEXT_MAX_CHARS", "24000"))
+CHAT_HISTORY_MAX_MESSAGES = 6
+CHAT_HISTORY_MESSAGE_MAX_CHARS = 2000
+
+
 def build_report_chat_context(db: Session, report: models.Report) -> str:
+    """Rapport complet + résumé + notes, pour que la recherche voie les nouveautés détaillées."""
+    title = "Note CODIR" if report.report_type == "codir_note" else "Analyse de veille"
+    parts = [f"## Rapport {report.id} · {title} du {report.date}"]
+
     summary = db.query(models.ReportSummary).filter(models.ReportSummary.report_id == report.id).first()
     if summary and summary.content.strip():
-        body = f"Résumé exécutif enregistré :\n{summary.content.strip()}"
-    else:
-        compact_content = report.content.strip()
-        if len(compact_content) > 3500:
-            compact_content = compact_content[:3500].rstrip() + "\n\n[contenu tronqué]"
-        body = f"Contenu du rapport :\n{compact_content}"
+        parts.append(f"### Résumé exécutif\n{summary.content.strip()}")
 
-    return f"Rapport {report.id} | {report.date} | {report.created_at.isoformat()}\n{body}"
+    content = (report.content or "").strip()
+    if len(content) > CHAT_REPORT_CONTEXT_MAX_CHARS:
+        content = content[:CHAT_REPORT_CONTEXT_MAX_CHARS].rstrip() + "\n\n[contenu tronqué]"
+    parts.append(f"### Contenu du rapport\n{content}")
+
+    notes = (
+        db.query(models.Note)
+        .filter(models.Note.report_id == report.id)
+        .order_by(models.Note.created_at.asc())
+        .all()
+    )
+    note_lines = []
+    for note in notes:
+        label = {"detail": "Détail", "definition": "Définition"}.get(note.kind, "Note")
+        source = (note.source_text or "").strip()
+        body = (note.content or "").strip()
+        if source and source != body:
+            note_lines.append(f"- {label} sur « {source[:200]} » : {body[:1200]}")
+        elif body:
+            note_lines.append(f"- {label} : {body[:1200]}")
+    if note_lines:
+        parts.append("### Notes de l'équipe\n" + "\n".join(note_lines))
+
+    return "\n\n".join(parts)
+
+
+def build_chat_history_text(history: Optional[list]) -> str:
+    if not history:
+        return ""
+    lines = []
+    for message in history[-CHAT_HISTORY_MAX_MESSAGES:]:
+        role = "Utilisateur" if message.role == "user" else "Assistant"
+        content = (message.content or "").strip()
+        if len(content) > CHAT_HISTORY_MESSAGE_MAX_CHARS:
+            content = content[:CHAT_HISTORY_MESSAGE_MAX_CHARS].rstrip() + " […]"
+        if content:
+            lines.append(f"{role} : {content}")
+    return "\n\n".join(lines)
+
+
+def build_chat_prompt(question: str, context_text: str, history_text: str, web_search: bool) -> str:
+    if web_search:
+        web_rules = """- tu peux et dois utiliser la recherche web pour compléter ou mettre à jour les rapports
+- structure la réponse en deux parties : « D'après les rapports » puis « Sur le web », et ne mélange pas les deux
+- chaque information issue du web doit avoir sa source en lien markdown [titre](url) avec sa date de publication
+- privilégie les sources officielles (changelogs, documentation, avis de sécurité, blogs engineering)"""
+    else:
+        web_rules = """- tu n'as pas accès à internet : ne prétends pas avoir fait une recherche web
+- tu peux ajouter du contexte général utile, mais en le signalant explicitement comme « contexte général », distinct des rapports"""
+
+    history_block = (
+        f"\nÉchanges précédents de la conversation (pour comprendre les questions de suivi) :\n\n{history_text}\n"
+        if history_text
+        else ""
+    )
+
+    return f"""Tu es l'assistant de veille IA de l'équipe STTI d'APRIL (architecture, plateforme, sécurité, développement). Tu réponds à partir des rapports de veille fournis.
+Date du jour : {datetime.now().strftime("%Y-%m-%d")}
+
+Règles :
+- priorise les informations présentes dans les rapports fournis
+- cite l'origine de chaque information issue des rapports sous la forme (Rapport <id> · <section>), par exemple (Rapport 12 · Nouveautés détaillées)
+{web_rules}
+- si l'information n'est pas présente, dis-le clairement
+- si plusieurs rapports se contredisent ou si le contexte est insuffisant, signale-le
+- réponse dense et concrète ; commence par la réponse directe en 2 à 4 lignes, puis les détails en listes courtes si utile
+- relie à la stack APRIL (Dagster, Snowflake, Azure, M365) ou à un cas assurance uniquement quand c'est pertinent
+- réponds en français, sans blocs de code
+{history_block}
+Question :
+{question}
+
+Rapports de contexte :
+
+{context_text}
+"""
+
 
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
 DEFAULT_GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "90"))
@@ -592,7 +672,14 @@ def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Security(
         raise HTTPException(status_code=401, detail="Invalid or missing token")
 
 
-TECHNICAL_PROMPT = """Tu produis une veille technique IA quotidienne couvrant les nouveautés publiées dans les dernières 24h.
+TECHNICAL_PROMPT = """Tu produis une veille technique IA quotidienne couvrant les nouveautés publiées dans les dernières 24h (la date du jour et la période exacte sont indiquées en tête de ce message).
+
+# Méthode de recherche (obligatoire)
+- Utilise l’outil de recherche web : fais plusieurs recherches ciblées (une par famille du périmètre ci-dessous), ne réponds jamais de mémoire.
+- Pour chaque nouveauté retenue, ouvre la source primaire (changelog, release GitHub, documentation, billet officiel) et vérifie sa date de publication.
+- Ne retiens que ce qui a été publié dans la période indiquée. Une annonce plus ancienne n’entre que si un fait nouveau est paru dans la période (nouvelle version, disponibilité générale, faille…).
+- Si tu ne trouves pas de source vérifiable pour un élément, écarte-le.
+- Journée calme : si peu de choses importantes sont sorties, dis-le dans le TL;DR et produis un rapport court. Ne remplis jamais avec des éléments faibles ou anciens.
 
 # Périmètre de recherche
 
@@ -643,18 +730,70 @@ N’utilise que ce sous-ensemble markdown : titres `## ` et `### `, puces `- `, 
 Trie les items par impact réel (pas par catégorie). Un `### ` par nouveauté, puis des puces plates :
 
 ### <Titre court de la nouveauté>
-- Ce qui sort
-- Pourquoi c’est important techniquement
-- Pour qui / impact architecture - plateforme - sécurité
-- Maturité (prototype / alpha / bêta / GA / production-ready)
-- Ancrage April (lien stack Dagster / Snowflake / Azure / M365 ou cas assurance, si pertinent)
-- Action recommandée
+- **Ce qui sort** : …
+- **Pourquoi c’est important** : … (impact technique)
+- **Pour qui** : … (impact architecture / plateforme / sécurité)
+- **Maturité** : prototype / alpha / bêta / GA / production-ready
+- **Ancrage April** : … (lien stack Dagster / Snowflake / Azure / M365 ou cas assurance ; omets la puce si non pertinent)
+- **Action recommandée** : …
+- **Source** : [titre de la source](url) — publié le AAAA-MM-JJ
 
 ## Signaux faibles & recherche
-- repos GitHub qui montent vite
-- publications de recherche / blogs engineering marquants (avec l’apport pratique)
+- repos GitHub qui montent vite (avec lien)
+- publications de recherche / blogs engineering marquants (avec l’apport pratique et le lien)
 - sujets à recontrôler dans les prochains jours
 """
+
+RECENT_NEWS_LOOKBACK_REPORTS = 5
+RECENT_NEWS_MAX_TITLES = 60
+
+
+def recent_news_titles(db: Session) -> list[str]:
+    """Titres des nouveautés des derniers rapports, pour éviter de les répéter."""
+    report_ids = [
+        row[0]
+        for row in db.query(models.Report.id)
+        .filter(models.Report.report_type == "technical_watch")
+        .order_by(models.Report.created_at.desc())
+        .limit(RECENT_NEWS_LOOKBACK_REPORTS)
+        .all()
+    ]
+    if not report_ids:
+        return []
+    rows = (
+        db.query(models.NewsItem.title, models.NewsItem.source_report_date)
+        .filter(models.NewsItem.report_id.in_(report_ids))
+        .order_by(models.NewsItem.created_at.desc(), models.NewsItem.position.asc())
+        .limit(RECENT_NEWS_MAX_TITLES)
+        .all()
+    )
+    return [f"{title} ({date})" if date else title for title, date in rows if title]
+
+
+def build_technical_prompt(db: Session, now: Optional[datetime] = None) -> str:
+    if now is None:
+        try:
+            from zoneinfo import ZoneInfo
+
+            now = datetime.now(ZoneInfo("Europe/Paris"))
+        except Exception:
+            now = datetime.now()
+    start = now - timedelta(days=1)
+    header = (
+        f"Date du jour : {now.strftime('%Y-%m-%d')}. "
+        f"Période couverte : du {start.strftime('%Y-%m-%d %H:%M')} au {now.strftime('%Y-%m-%d %H:%M')} (heure de Paris).\n\n"
+    )
+    prompt = header + TECHNICAL_PROMPT
+    titles = recent_news_titles(db)
+    if titles:
+        prompt += (
+            "\n# Déjà couvert dans les rapports précédents\n"
+            "Ne répète pas ces sujets, sauf fait nouveau publié dans la période ; dans ce cas, "
+            "commence le titre par « Mise à jour : » et décris uniquement ce qui a changé.\n"
+            + "\n".join(f"- {title}" for title in titles)
+            + "\n"
+        )
+    return prompt
 
 
 CODIR_NOTE_PROMPT = """# RÔLE
@@ -1615,52 +1754,46 @@ def chat_with_reports(payload: schemas.ChatRequest, db: Session = Depends(get_db
 
     # On mémorise les rapports réellement consultés pour afficher les sources.
     used_report_ids = [report.id for report in reports]
-    user_message = models.ChatMessage(
-        role="user",
-        content=question,
-        report_ids=serialize_report_ids(used_report_ids),
+    use_web_search = bool(payload.web_search)
+    if use_web_search and not llm_supports_web_search():
+        raise HTTPException(
+            status_code=400,
+            detail="Le fournisseur LLM actif n'a pas accès à internet (voir LLM_PROVIDER).",
+        )
+
+    context_text = "\n\n---\n\n".join(build_report_chat_context(db, report) for report in reports)
+    chat_prompt = build_chat_prompt(
+        question,
+        context_text,
+        build_chat_history_text(payload.history),
+        use_web_search,
     )
-    db.add(user_message)
-    db.commit()
-
-    context_blocks = [build_report_chat_context(db, report) for report in reports]
-    context_text = "\n\n---\n\n".join(context_blocks)
-
-    chat_prompt = f"""Tu es un assistant technique qui répond à des questions à partir de rapports de veille IA déjà générés.
-
-Règles :
-- priorise les informations présentes dans les rapports fournis
-- si la question demande un complément lié à la technologie, tu peux donner du contexte général utile, mais indique clairement ce qui vient des rapports et ce qui est du contexte général
-- ne prétends pas avoir fait une recherche web en direct
-- si l'information n'est pas présente, dis-le clairement
-- réponse dense, concrète, orientée architecture / plateforme / sécurité / développement
-- utilise des listes courtes si utile
-- si plusieurs rapports se contredisent ou si le contexte est insuffisant, signale-le
-
-Question :
-{question}
-
-Rapports de contexte :
-
-{context_text}
-"""
 
     try:
         ensure_llm_ready()
-        response = generate_llm_content(chat_prompt)
-        content = response if isinstance(response, str) else response.text
-        db.add(
-            models.ChatMessage(
-                role="assistant",
-                content=content,
-                report_ids=serialize_report_ids(used_report_ids),
-            )
-        )
-        db.commit()
-        return {"answer": content}
+        timeout = max(LLM_TIMEOUT_SECONDS, 300) if use_web_search else LLM_TIMEOUT_SECONDS
+        content = generate_llm_content(chat_prompt, timeout_seconds=timeout, web_search=use_web_search)
     except Exception as e:
         print(f"Error in chat endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+    if payload.persist:
+        # Question et réponse sont enregistrées ensemble, seulement en cas de succès.
+        serialized_ids = serialize_report_ids(used_report_ids)
+        db.add(models.ChatMessage(role="user", content=question, report_ids=serialized_ids))
+        db.add(models.ChatMessage(role="assistant", content=content, report_ids=serialized_ids))
+        db.commit()
+    return {"answer": content}
+
+
+@app.get("/llm/info", response_model=schemas.LLMInfo)
+def get_llm_info(_=Depends(verify_token)):
+    try:
+        provider = get_llm_provider()
+        return {"provider": provider, "web_search": llm_supports_web_search(), "backend": describe_llm_backend()}
+    except RuntimeError as e:
+        return {"provider": os.getenv("LLM_PROVIDER", ""), "web_search": False, "backend": str(e)}
+
 
 @app.post("/reports/trigger", response_model=schemas.Report)
 async def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token)):
@@ -1674,7 +1807,7 @@ async def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token))
         print(f"Sending report request to {describe_llm_backend()} timeout={LLM_REPORT_TIMEOUT_SECONDS}s")
         start = time.perf_counter()
         response = generate_llm_content(
-            TECHNICAL_PROMPT,
+            build_technical_prompt(db),
             timeout_seconds=LLM_REPORT_TIMEOUT_SECONDS,
             web_search=True,
         )

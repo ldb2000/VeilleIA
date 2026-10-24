@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -9,12 +9,14 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Globe,
   Download,
   FileText,
   MessageSquareShare,
   MoreVertical,
   NotebookPen,
   Plus,
+  MessageSquarePlus,
   RefreshCw,
   Search,
   Sparkles,
@@ -31,6 +33,7 @@ import {
   generateReportSummary,
   generateCodirNote,
   getChatMessages,
+  getLlmInfo,
   getNews,
   getReportDefinition,
   getReportDetail,
@@ -41,7 +44,7 @@ import {
   setNewsSaved,
   triggerReport,
 } from './api';
-import type { ChatMessage, NewsItem, Note, Report } from './api';
+import type { ChatMessage, LlmInfo, NewsItem, Note, Report } from './api';
 import './App.css';
 
 type ContextMenuState = {
@@ -101,6 +104,24 @@ const CHAT_SUGGESTIONS = [
   'Alertes sécurité en cours',
   'Lien avec Snowflake ou Dagster',
 ];
+const CHAT_CONVERSATION_START_KEY = 'veilleia.chatConversationStart.v1';
+
+const readConversationStart = (): number => {
+  try {
+    return Number(window.localStorage.getItem(CHAT_CONVERSATION_START_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+};
+
+const writeConversationStart = (value: number) => {
+  try {
+    window.localStorage.setItem(CHAT_CONVERSATION_START_KEY, String(value));
+  } catch {
+    // Stockage indisponible : la conversation repartira de zéro au rechargement.
+  }
+};
+
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const PROJECT_SYNTHESIS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const TEAMS_SHARE_URL =
@@ -315,6 +336,9 @@ function App() {
   const [notesFilter, setNotesFilter] = useState<'all' | 'note' | 'detail' | 'definition'>('all');
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
   const [savedAnswerIds, setSavedAnswerIds] = useState<Set<number>>(new Set());
+  const [llmInfo, setLlmInfo] = useState<LlmInfo | null>(null);
+  const [chatWebSearch, setChatWebSearch] = useState(false);
+  const [conversationStartId, setConversationStartId] = useState<number>(() => readConversationStart());
   const [projectSynthesis, setProjectSynthesis] = useState<ProjectSynthesisCacheEntry | null>(null);
   const [projectSynthesisLoading, setProjectSynthesisLoading] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
@@ -328,6 +352,9 @@ function App() {
     fetchNotes();
     fetchChatHistory();
     fetchSavedNews();
+    getLlmInfo()
+      .then(setLlmInfo)
+      .catch((error) => console.error('Erreur lors du chargement du fournisseur LLM :', error));
   }, []);
 
   useEffect(() => {
@@ -698,6 +725,12 @@ function App() {
       return;
     }
     const reportIds = activeChatReportIds.length > 0 ? activeChatReportIds : reports.slice(0, CHAT_MAX_REPORTS).map((r) => r.id);
+    // Échanges de la conversation en cours, pour comprendre les questions de suivi.
+    const history = chatHistory
+      .filter((message) => message.id > conversationStartId)
+      .slice(-6)
+      .map((message) => ({ role: message.role, content: message.content }));
+    const webSearch = chatWebSearch && Boolean(llmInfo?.web_search);
 
     const pendingMessage: ChatMessage = {
       id: Date.now(),
@@ -712,7 +745,7 @@ function App() {
     setChatLoading(true);
 
     try {
-      await chatWithReports(question, reportIds);
+      await chatWithReports(question, reportIds, { history, webSearch });
       await fetchChatHistory();
     } catch (error) {
       setChatHistory((current) => current.filter((message) => message.id !== pendingMessage.id));
@@ -722,6 +755,12 @@ function App() {
     } finally {
       setChatLoading(false);
     }
+  };
+
+  const startNewConversation = () => {
+    const lastId = chatHistory.reduce((max, message) => Math.max(max, message.id), 0);
+    setConversationStartId(lastId);
+    writeConversationStart(lastId);
   };
 
   const removeChatReport = (reportId: number) => {
@@ -789,6 +828,7 @@ function App() {
       const result = await chatWithReports(
         `Fais une synthèse courte sur ${project} à partir des rapports fournis. Réponds uniquement avec ces 4 puces, une ligne chacune : « - **Nouveauté** : … », « - **Intérêt pour APRIL** : … », « - **Risque ou limite** : … », « - **Action recommandée** : … ».`,
         reportIds,
+        { persist: false },
       );
       const nextSynthesis = {
         project,
@@ -801,7 +841,6 @@ function App() {
         ...cache,
         [cacheKey]: nextSynthesis,
       });
-      await fetchChatHistory();
     } catch (error) {
       console.error('Erreur lors de la synthèse projet :', error);
       alert('Impossible de générer la synthèse du projet.');
@@ -1616,7 +1655,19 @@ function App() {
       <div className="searches-view">
         <section className="chat-panel" aria-label="Interroger la veille">
           <div className="chat-panel-header">
-            <h1>Interroger la veille</h1>
+            <div className="chat-panel-title">
+              <h1>Interroger la veille</h1>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={startNewConversation}
+                disabled={chatLoading || !chatHistory.some((message) => message.id > conversationStartId)}
+                title="Les prochaines questions ne tiendront plus compte des échanges précédents"
+              >
+                <MessageSquarePlus size={16} />
+                Nouvelle conversation
+              </button>
+            </div>
             <div className="chat-scope">
               <span className="chat-scope-label">Rapports consultés :</span>
               {chatReports.map((report) => (
@@ -1666,11 +1717,21 @@ function App() {
               </div>
             )}
             {chatHistory.map((message, index) => {
+              const startsConversation =
+                conversationStartId > 0 &&
+                message.id > conversationStartId &&
+                (index === 0 || chatHistory[index - 1].id <= conversationStartId);
+              const separator = startsConversation ? (
+                <div className="chat-separator" role="separator">
+                  <span>Nouvelle conversation</span>
+                </div>
+              ) : null;
               if (message.role === 'user') {
                 return (
-                  <div key={message.id} className="chat-bubble chat-bubble-user">
-                    {message.content}
-                  </div>
+                  <Fragment key={message.id}>
+                    {separator}
+                    <div className="chat-bubble chat-bubble-user">{message.content}</div>
+                  </Fragment>
                 );
               }
               const previous = chatHistory[index - 1];
@@ -1736,6 +1797,24 @@ function App() {
                 </button>
               ))}
             </div>
+            <label
+              className={`web-toggle ${llmInfo?.web_search ? '' : 'disabled'}`}
+              title={
+                llmInfo?.web_search
+                  ? 'Codex complète la réponse par une recherche internet (plus lent)'
+                  : 'Le fournisseur LLM actif n’a pas accès à internet'
+              }
+            >
+              <input
+                type="checkbox"
+                checked={chatWebSearch && Boolean(llmInfo?.web_search)}
+                disabled={!llmInfo?.web_search || chatLoading}
+                onChange={(event) => setChatWebSearch(event.target.checked)}
+              />
+              <Globe size={15} />
+              Chercher aussi sur le web
+              {!llmInfo?.web_search && <span>(indisponible avec {llmInfo?.provider || 'ce fournisseur'})</span>}
+            </label>
             <div className="chat-input-row">
               <label htmlFor="chat-question">
                 Votre question
