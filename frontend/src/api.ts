@@ -152,6 +152,11 @@ export const deleteNote = async (noteId: number): Promise<void> => {
   await axios.delete(`${API_URL}/notes/${noteId}`);
 };
 
+export const getReportNewsletter = async (id: number): Promise<string> => {
+  const response = await axios.get(`${API_URL}/reports/${id}/newsletter`, { responseType: 'text' });
+  return response.data;
+};
+
 export const downloadReportPdf = async (id: number): Promise<Blob> => {
   const response = await axios.get(`${API_URL}/reports/${id}/pdf`, {
     responseType: 'blob',

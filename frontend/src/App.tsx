@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Copy,
   Globe,
+  Mail,
   Download,
   FileText,
   MessageSquareShare,
@@ -34,6 +35,7 @@ import {
   generateCodirNote,
   getChatMessages,
   getLlmInfo,
+  getReportNewsletter,
   getNews,
   getReportDefinition,
   getReportDetail,
@@ -483,6 +485,26 @@ function App() {
     } catch (error) {
       console.error('Erreur lors de l’export PDF :', error);
       alert('Impossible d’exporter le PDF.');
+    }
+  };
+
+  const handleOpenNewsletter = async (report: Report) => {
+    // Fenêtre ouverte tout de suite (avant l'appel réseau) pour éviter le bloqueur de popups.
+    const target = window.open('', '_blank');
+    try {
+      const html = await getReportNewsletter(report.id);
+      const page = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Newsletter veille IA ${report.date}</title></head><body style="margin:0">${html}</body></html>`;
+      const url = URL.createObjectURL(new Blob([page], { type: 'text/html' }));
+      if (target) {
+        target.location.href = url;
+      } else {
+        window.open(url, '_blank');
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      target?.close();
+      console.error('Erreur lors de la génération de la newsletter :', error);
+      alert('Impossible de générer la newsletter.');
     }
   };
 
@@ -1255,6 +1277,12 @@ function App() {
                     <Download size={16} />
                     Exporter en PDF
                   </button>
+                  {selectedReport.report_type === 'technical_watch' && (
+                    <button type="button" className="btn btn-ghost" onClick={() => handleOpenNewsletter(selectedReport)}>
+                      <Mail size={16} />
+                      Newsletter
+                    </button>
+                  )}
                   <button type="button" className="btn btn-ghost" onClick={() => handleShareTeams(selectedReport)}>
                     <MessageSquareShare size={16} />
                     Partager dans Teams

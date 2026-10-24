@@ -57,3 +57,14 @@ A web application that automatically monitors AI news from major industry player
 ## Tech Stack
 - **Frontend:** React, TypeScript, Vite, Vanilla CSS, React-Markdown, Lucide Icons.
 - **Backend:** FastAPI, SQLAlchemy, SQLite, Codex CLI / OpenRouter / Gemini, ReportLab.
+
+## Daily run (cron) and newsletter
+
+`POST /cron/daily` generates today's watch if it does not exist yet (`?force=true` to regenerate) and returns the report id and its newsletter URL. Generation takes several minutes, so give the HTTP client a long timeout:
+
+```bash
+# crontab -e : every weekday at 7:30
+30 7 * * 1-5 curl -fsS -X POST --max-time 900 -H "Authorization: Bearer $API_TOKEN" http://localhost:8000/cron/daily >> ~/veille-cron.log 2>&1
+```
+
+`GET /reports/{id}/newsletter` returns the email-ready HTML body (Gmail/Outlook safe). The "Newsletter" button in the report view opens it in a new tab.

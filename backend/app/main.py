@@ -4,11 +4,13 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from html import escape, unescape
 from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, Response, Security
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
@@ -28,6 +30,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import Image as RLImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from . import models, schemas, database
+from .newsletter import render_newsletter
 
 if TYPE_CHECKING:
     from google.oauth2.credentials import Credentials
@@ -1818,39 +1821,102 @@ def get_llm_info(_=Depends(verify_token)):
         return {"provider": os.getenv("LLM_PROVIDER", ""), "web_search": False, "backend": str(e)}
 
 
-@app.post("/reports/trigger", response_model=schemas.Report)
-async def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token)):
+# Une seule génération de veille à la fois (bouton de l'interface ou cron).
+WATCH_GENERATION_LOCK = threading.Lock()
+
+
+def today_paris() -> str:
     try:
-        ensure_llm_ready()
-        if not llm_supports_web_search():
-            print(
-                "ATTENTION : le fournisseur LLM actif n'a pas accès à internet ; "
-                "la veille reposera sur ses connaissances, sans actualité des dernières 24h."
-            )
-        print(f"Sending report request to {describe_llm_backend()} timeout={LLM_REPORT_TIMEOUT_SECONDS}s")
-        start = time.perf_counter()
-        response = generate_llm_content(
-            build_technical_prompt(db),
-            timeout_seconds=LLM_REPORT_TIMEOUT_SECONDS,
-            web_search=True,
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Europe/Paris")).strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
+def generate_watch_report(db: Session) -> models.Report:
+    """Génère, enregistre et indexe un rapport de veille quotidienne. Appelant : détenir le verrou."""
+    ensure_llm_ready()
+    if not llm_supports_web_search():
+        print(
+            "ATTENTION : le fournisseur LLM actif n'a pas accès à internet ; "
+            "la veille reposera sur ses connaissances, sans actualité des dernières 24h."
         )
-        elapsed = time.perf_counter() - start
-        print(f"LLM response received in {elapsed:.2f}s")
-        content = response if isinstance(response, str) else response.text
-        
-        db_report = models.Report(
-            date=datetime.now().strftime("%Y-%m-%d"),
-            report_type="technical_watch",
-            content=content
-        )
-        db.add(db_report)
-        db.commit()
-        db.refresh(db_report)
-        sync_news_items(db, db_report)
-        return db_report
+    print(f"Sending report request to {describe_llm_backend()} timeout={LLM_REPORT_TIMEOUT_SECONDS}s")
+    start = time.perf_counter()
+    content = generate_llm_content(
+        build_technical_prompt(db),
+        timeout_seconds=LLM_REPORT_TIMEOUT_SECONDS,
+        web_search=True,
+    )
+    print(f"LLM response received in {time.perf_counter() - start:.2f}s")
+
+    db_report = models.Report(date=today_paris(), report_type="technical_watch", content=content)
+    db.add(db_report)
+    db.commit()
+    db.refresh(db_report)
+    sync_news_items(db, db_report)
+    return db_report
+
+
+# Fonction synchrone : FastAPI l'exécute dans un thread, l'appel LLM (plusieurs minutes)
+# ne bloque donc plus les autres requêtes.
+@app.post("/reports/trigger", response_model=schemas.Report)
+def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token)):
+    if not WATCH_GENERATION_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Une génération de veille est déjà en cours.")
+    try:
+        return generate_watch_report(db)
     except Exception as e:
         print(f"Error triggering report: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        WATCH_GENERATION_LOCK.release()
+
+
+@app.post("/cron/daily", response_model=schemas.DailyRunResponse)
+def run_daily_watch(force: bool = False, db: Session = Depends(get_db), _=Depends(verify_token)):
+    """Route pour le cron : génère la veille du jour si elle n'existe pas encore (force=true pour en refaire une)."""
+    today = today_paris()
+    if not force:
+        existing = (
+            db.query(models.Report)
+            .filter(models.Report.report_type == "technical_watch", models.Report.date == today)
+            .order_by(models.Report.created_at.desc())
+            .first()
+        )
+        if existing is not None:
+            return {
+                "report_id": existing.id,
+                "date": existing.date,
+                "created": False,
+                "newsletter_url": f"/reports/{existing.id}/newsletter",
+            }
+
+    if not WATCH_GENERATION_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Une génération de veille est déjà en cours.")
+    try:
+        report = generate_watch_report(db)
+    except Exception as e:
+        print(f"Error in daily cron run: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        WATCH_GENERATION_LOCK.release()
+    return {
+        "report_id": report.id,
+        "date": report.date,
+        "created": True,
+        "newsletter_url": f"/reports/{report.id}/newsletter",
+    }
+
+
+@app.get("/reports/{report_id}/newsletter", response_class=HTMLResponse)
+def get_report_newsletter(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
+    """Corps d'email HTML (commence par <table>) prêt à coller dans un client mail."""
+    report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return HTMLResponse(render_newsletter(report.content or "", report.date))
 
 
 @app.post("/reports/{report_id}/codir", response_model=schemas.Report)

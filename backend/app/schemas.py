@@ -106,3 +106,10 @@ class NewsItem(BaseModel):
 
 class NewsItemUpdate(BaseModel):
     saved: bool
+
+
+class DailyRunResponse(BaseModel):
+    report_id: int
+    date: str
+    created: bool
+    newsletter_url: str
