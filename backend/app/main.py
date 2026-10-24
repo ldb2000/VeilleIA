@@ -695,6 +695,19 @@ MCP (Model Context Protocol), tool use / function calling, browse / search / com
 ## Recherche
 Publications de recherche marquantes (arXiv, blogs engineering des labs) ayant un impact pratique, pas seulement les releases produit.
 
+# Axes d’analyse (uniquement)
+- actualité des entreprises liée à l’IA (rachats, partenariats, réorganisations ayant un effet technique)
+- nouveaux modèles
+- changements d’API
+- changements tarifaires des modèles, et entreprises qui changent de fournisseur ou d’usage à cause de ces changements
+- tool use / search / browse / computer use
+- contexte max / tokens / mémoire / long context
+- multimodalité
+- agents / orchestration
+- sécurité / guardrails / gouvernance technique
+- dépréciations / breaking changes / migrations
+- disponibilité réelle (régions, GA, accès entreprise, Azure / AWS / GCP)
+
 # Objectif
 Veille utile pour un profil architecture / plateforme / infra / sécurité / développement. Détecter vite les sorties réellement importantes, y compris l’open source émergent qui change les usages de développement, de prototypage ou de « vibe coding ».
 
@@ -733,15 +746,25 @@ Trie les items par impact réel (pas par catégorie). Un `### ` par nouveauté, 
 - **Ce qui sort** : …
 - **Pourquoi c’est important** : … (impact technique)
 - **Pour qui** : … (impact architecture / plateforme / sécurité)
+- **Type** : nouveau modèle / API / tarification / tool use / long context / multimodal / agents / sécurité / dépréciation / disponibilité / entreprise
 - **Maturité** : prototype / alpha / bêta / GA / production-ready
 - **Ancrage April** : … (lien stack Dagster / Snowflake / Azure / M365 ou cas assurance ; omets la puce si non pertinent)
 - **Action recommandée** : …
 - **Source** : [titre de la source](url) — publié le AAAA-MM-JJ
 
+## Sécurité & gouvernance
+Section toujours présente. Une puce par sujet : vulnérabilités et CVE touchant modèles, SDK, agents ou serveurs MCP ; incidents ; attaques (prompt injection, exfiltration, supply chain) ; nouveaux guardrails ; évolutions de gouvernance ou de conformité (AI Act, politiques de données). Pour chaque puce : le fait, qui est exposé, l’action recommandée et la source en lien.
+- Si rien de notable dans la période : « - Rien de notable dans la période. »
+
 ## Signaux faibles & recherche
 - repos GitHub qui montent vite (avec lien)
 - publications de recherche / blogs engineering marquants (avec l’apport pratique et le lien)
 - sujets à recontrôler dans les prochains jours
+
+## Note de méthode
+- Fenêtre couverte (dates et heures).
+- Éléments issus de trackers tiers ou de médias plutôt que de sources primaires : liste-les.
+- Rappel : les éléments en bêta / preview ne sont pas disponibles en production.
 """
 
 RECENT_NEWS_LOOKBACK_REPORTS = 5

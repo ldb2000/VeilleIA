@@ -12,7 +12,9 @@ def test_technical_prompt_uses_decision_first_structure():
         "### À surveiller",
         "### À ignorer",
         "## Nouveautés détaillées",
+        "## Sécurité & gouvernance",
         "## Signaux faibles & recherche",
+        "## Note de méthode",
     ]:
         assert section in TECHNICAL_PROMPT, f"section manquante: {section}"
 
