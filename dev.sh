@@ -43,13 +43,41 @@ trap cleanup SIGINT
 # 2. Configuration du Backend
 echo -e "${GREEN}[1/2] Configuration du Backend...${NC}"
 cd backend
+
+# Choix de l'interpréteur : python3.11 (version du projet) en priorité, sinon une version récente.
+PYTHON_BIN=""
+for candidate in python3.11 python3.12 python3.13 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+if [ -z "$PYTHON_BIN" ]; then
+    echo -e "${RED}[X] Aucun interpréteur Python 3 trouvé. Installez Python 3.11 (brew install python@3.11).${NC}"
+    exit 1
+fi
+PYTHON_VERSION=$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+if [ "$PYTHON_VERSION" != "3.11" ]; then
+    echo -e "${YELLOW}[!] Python 3.11 introuvable, utilisation de $PYTHON_BIN ($PYTHON_VERSION). Recommandé : brew install python@3.11${NC}"
+fi
+
+# Recrée le venv s'il a été construit avec une autre version de Python.
+if [ -x "venv/bin/python" ]; then
+    VENV_VERSION=$(venv/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)
+    if [ "$VENV_VERSION" != "$PYTHON_VERSION" ]; then
+        echo -e "${YELLOW}[!] venv en Python ${VENV_VERSION:-inconnu}, recréation avec Python $PYTHON_VERSION...${NC}"
+        rm -rf venv
+    fi
+fi
+
 if [ ! -d "venv" ]; then
-    echo -e "${BLUE}[*] Création de l'environnement virtuel...${NC}"
-    python3 -m venv venv
+    echo -e "${BLUE}[*] Création de l'environnement virtuel (Python $PYTHON_VERSION)...${NC}"
+    "$PYTHON_BIN" -m venv venv
 fi
 
 source venv/bin/activate
 echo -e "${BLUE}[*] Installation/Mise à jour des dépendances Python...${NC}"
+python -m pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
 # Lancement du backend en arrière-plan
