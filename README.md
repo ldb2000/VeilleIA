@@ -1,62 +1,26 @@
 # AI Technical Watch (Veille IA)
 
-A web application that automatically monitors AI news from major industry players (OpenAI, Anthropic, Google, etc.), analyzes them with a technical focus using an LLM (Codex CLI by default, or OpenRouter / Gemini), and provides a blog-like interface with PDF export.
+A web application that produces a daily technical watch on AI news (OpenAI, Anthropic, Google, Mistral, Microsoft, AWS, NVIDIA, open-source tooling…). An LLM with live web search (Codex CLI by default, or OpenRouter / Gemini) writes a decision-first report; the React interface lets the team read it, summarise it, annotate it, save individual news, query past reports in a chat, produce a CODIR note, and export to PDF, Word or an email-ready HTML newsletter.
+
+**Full documentation (French): [docs/](docs/README.md)** — [architecture](docs/ARCHITECTURE.md), [API](docs/API.md), [configuration](docs/CONFIGURATION.md), [functional guide](docs/FONCTIONNEL.md), [operations](docs/EXPLOITATION.md).
 
 ## Prerequisites
-- Node.js (v18+)
-- Python (3.9+)
-- Codex CLI (`npm install -g @openai/codex`, then `codex login`) — or an OpenRouter API key
 
-## Setup
+- Python 3.11 (`.python-version`; 3.12/3.13 also work)
+- Node.js 18+
+- An LLM provider: Codex CLI (`npm install -g @openai/codex`, then `codex login`) — or an OpenRouter API key
 
-### 1. Backend Setup
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
-2. Create a virtual environment and activate it:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Configure environment variables:
-   - Create a `.env` file from `.env.example`:
-     ```bash
-     cp ../.env.example .env
-     ```
-   - Edit `.env` and choose `LLM_PROVIDER` (`codex` by default; `openrouter` needs `OPENROUTER_API_KEY` and has no web search unless `OPENROUTER_WEB_SEARCH=true`).
-5. Start the FastAPI server:
-   ```bash
-   uvicorn app.main:app --reload
-   ```
+## Quick start
 
-### 2. Frontend Setup
-1. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Start the development server:
-   ```bash
-   npm run dev
-   ```
+```bash
+./dev.sh
+```
 
-## Usage
-- Open your browser at `http://localhost:5173`.
-- Click **"Trigger Daily Watch"** to initiate a new technical analysis.
-- View historical reports in the sidebar.
-- Use **"Export PDF"** to download a clean, technical report for sharing.
+`dev.sh` creates `backend/.env` from `.env.example` if needed, builds `backend/venv` with Python 3.11, installs the dependencies, and starts the backend (http://localhost:8000) and the frontend (http://localhost:5173). Open the frontend and click **« Lancer la veille »**.
 
-## Tech Stack
-- **Frontend:** React, TypeScript, Vite, Vanilla CSS, React-Markdown, Lucide Icons.
-- **Backend:** FastAPI, SQLAlchemy, SQLite, Codex CLI / OpenRouter / Gemini, ReportLab.
+Configuration lives in `backend/.env`; every variable is described in [docs/CONFIGURATION.md](docs/CONFIGURATION.md). The main one is `LLM_PROVIDER` (`codex` by default; `openrouter` needs `OPENROUTER_API_KEY` and has no web search unless `OPENROUTER_WEB_SEARCH=true`).
+
+Manual start, containers (`./compose.sh start`), tests and troubleshooting: [docs/EXPLOITATION.md](docs/EXPLOITATION.md).
 
 ## Daily run (cron) and newsletter
 
@@ -67,4 +31,9 @@ A web application that automatically monitors AI news from major industry player
 30 7 * * 1-5 curl -fsS -X POST --max-time 900 -H "Authorization: Bearer $API_TOKEN" http://localhost:8000/cron/daily >> ~/veille-cron.log 2>&1
 ```
 
-`GET /reports/{id}/newsletter` returns the email-ready HTML body (Gmail/Outlook safe). The "Newsletter" button in the report view opens it in a new tab.
+`GET /reports/{id}/newsletter` returns the email-ready HTML body (Gmail/Outlook safe). The « Newsletter » button in the report view opens it in a new tab. Nothing is emailed automatically.
+
+## Tech stack
+
+- **Frontend:** React 19, TypeScript, Vite, React-Markdown + remark-gfm, Lucide icons, APRIL design tokens (Poppins).
+- **Backend:** FastAPI, SQLAlchemy, SQLite, Codex CLI / OpenRouter / Gemini, ReportLab (PDF), python-docx (Word).
