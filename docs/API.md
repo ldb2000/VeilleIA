@@ -49,6 +49,7 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 | 20 | GET | `/reports/{report_id}/pdf` | — | `application/pdf` (pièce jointe `ai_watch_<date>.pdf`) | 404 |
 | 21 | GET | `/reports/{report_id}/docx` | — | `.docx` (pièce jointe `note_codir_veille_ia_<date>.docx`) | 400 si pas une note CODIR, 404 |
 | 22 | GET | `/reports/{report_id}/newsletter` | — | `text/html` : corps d'email commençant par `<table>` | 404 |
+| 23 | GET | `/reddit/preview` | query `subreddit` (optionnel), `period` (`day`) | `RedditPreview` (aucun appel LLM) | 400 |
 
 ## Détail des endpoints
 
@@ -136,6 +137,28 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 
 **`GET /reports/{report_id}/newsletter`** — HTML de newsletter (voir [ARCHITECTURE.md](ARCHITECTURE.md#newsletter)).
 
+### Reddit
+
+**`GET /reddit/preview?subreddit=&period=`** — posts Reddit filtrés, tels qu'ils seraient ajoutés au prompt de veille, **sans appel LLM**. Sert à régler la configuration ; fonctionne même avec `REDDIT_ENABLED=false` (le champ `enabled` indique si la veille les utilisera).
+
+- `subreddit` : un seul subreddit (avec ou sans `r/`) ; vide ou absent : ceux de `REDDIT_SUBREDDITS`. Nom invalide : 400.
+- `period` : `hour`, `day` (défaut), `week`, `month`, `year` ou `all` ; la fenêtre de filtrage suit la période (24 h pour `day`, aucune pour `all`). Autre valeur : 400.
+- Reddit indisponible : 200 avec `posts` vide et la cause dans `errors`.
+
+```json
+{
+  "enabled": true, "oauth": true, "period": "day",
+  "subreddits": ["LocalLLaMA"], "min_score": 50, "max_posts": 15,
+  "posts": [{
+    "title": "…", "subreddit": "LocalLLaMA", "score": 812, "num_comments": 143,
+    "permalink": "https://www.reddit.com/r/LocalLLaMA/comments/…/",
+    "external_url": "https://huggingface.co/…", "created_utc": 1792900000.0,
+    "created_at": "2026-10-25T05:46:40+00:00", "flair": "New Model"
+  }],
+  "errors": []
+}
+```
+
 ## Exemples
 
 ```bash
@@ -145,4 +168,5 @@ curl -X POST --max-time 900 -H "Authorization: Bearer $TOKEN" "http://localhost:
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
      -d '{"question": "Que faut-il tester cette semaine ?"}' http://localhost:8000/chat
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/reports/42/newsletter > newsletter.html
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/reddit/preview?subreddit=LocalLLaMA&period=day"
 ```

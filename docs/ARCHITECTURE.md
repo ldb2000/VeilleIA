@@ -13,8 +13,8 @@
                                  │ HTTP JSON (+ Bearer API_TOKEN si défini)
                  ┌───────────────▼──────────────────┐        cron externe
                  │  Backend FastAPI (uvicorn :8000) │◄────── POST /cron/daily
-                 │  main.py · newsletter.py         │
-                 │  models.py · schemas.py          │
+                 │  main.py · newsletter.py         │      Reddit (optionnel)
+                 │  reddit.py · models · schemas    │─────► top.json / oauth.reddit.com
                  └──────┬───────────────────┬───────┘
                         │ SQLAlchemy        │ generate_llm_content()
               ┌─────────▼────────┐   ┌──────▼───────────────────────────────┐
@@ -26,7 +26,7 @@
 ```
 
 - Le **frontend** est une application monopage : tout l'état d'interface vit dans `App.tsx`, tous les appels réseau dans `api.ts`.
-- Le **backend** est volontairement concentré dans `main.py` (endpoints, prompts, couche LLM, rendus PDF / DOCX). Seul le rendu de la newsletter est isolé dans `newsletter.py`, car c'est une fonction pure sans dépendance au reste.
+- Le **backend** est volontairement concentré dans `main.py` (endpoints, prompts, couche LLM, rendus PDF / DOCX). Deux modules autonomes, sans dépendance au reste de l'application, en sont sortis : le rendu de la newsletter (`newsletter.py`) et la lecture de Reddit (`reddit.py`).
 - La **base** est un fichier SQLite ; le schéma est créé au démarrage, sans Alembic.
 - Le **LLM** est appelé uniquement par le backend, via un point d'entrée unique (`generate_llm_content`).
 
@@ -36,8 +36,9 @@
 
 | Fichier | Rôle |
 | --- | --- |
-| `main.py` | Application FastAPI : CORS, authentification (`verify_token`), migrations légères, couche LLM (Codex, OpenRouter, Gemini), prompts (`TECHNICAL_PROMPT`, `CODIR_NOTE_PROMPT`, prompts inline de résumé / détail / définition / chat), extraction des news, rendu PDF (ReportLab) et DOCX (python-docx), les 22 endpoints. |
+| `main.py` | Application FastAPI : CORS, authentification (`verify_token`), migrations légères, couche LLM (Codex, OpenRouter, Gemini), prompts (`TECHNICAL_PROMPT`, `CODIR_NOTE_PROMPT`, prompts inline de résumé / détail / définition / chat), extraction des news, rendu PDF (ReportLab) et DOCX (python-docx), les 23 endpoints. |
 | `newsletter.py` | Rendu déterministe d'un rapport en corps d'email HTML compatible Gmail / Outlook (`render_newsletter`). Aucun appel LLM. |
+| `reddit.py` | Signaux communautaires Reddit (optionnels, `REDDIT_ENABLED`) : lecture du top des subreddits (`fetch_subreddit_posts`, OAuth « application-only » ou JSON public), filtrage (`filter_posts`), section ajoutée au prompt de veille (`build_reddit_prompt_section`). Ne lève jamais d'exception. |
 | `models.py` | Modèles SQLAlchemy : `Report`, `ReportSummary`, `Note`, `ChatMessage`, `NewsItem`. |
 | `schemas.py` | Schémas Pydantic des entrées / sorties d'API. |
 | `database.py` | Moteur SQLAlchemy et `SessionLocal`, à partir de `DATABASE_URL`. |
@@ -171,6 +172,7 @@ POST /cron/daily       ─┴► WATCH_GENERATION_LOCK.acquire(blocking=False) �
                              │    « Date du jour … Période couverte : du J-1 HH:MM au J HH:MM (Paris) »
                              │    + TECHNICAL_PROMPT
                              │    + « Déjà couvert » : titres des news des 5 dernières veilles (60 max)
+                             │    + « # Signaux communautaires Reddit » si REDDIT_ENABLED et des posts passent les filtres
                              ├─ generate_llm_content(…, LLM_REPORT_TIMEOUT_SECONDS, web_search=True)
                              ├─ INSERT reports (date = today_paris(), technical_watch)
                              └─ sync_news_items() → news_items
@@ -180,6 +182,16 @@ POST /cron/daily       ─┴► WATCH_GENERATION_LOCK.acquire(blocking=False) �
 - Le verrou est un `threading.Lock` en mémoire : il protège un processus uvicorn unique, pas plusieurs instances.
 - `/cron/daily` ne génère rien si une `technical_watch` existe déjà pour la date du jour (sauf `force=true`), ce qui rend le cron rejouable.
 - `TECHNICAL_PROMPT` impose la méthode (recherches web ciblées, vérification des sources primaires et des dates), le périmètre, les axes d'analyse et le format de sortie décrit dans [FONCTIONNEL.md](FONCTIONNEL.md#structure-dun-rapport-de-veille).
+
+### Signaux communautaires Reddit
+
+Optionnels (`REDDIT_ENABLED=true`, désactivés par défaut ; variables dans [CONFIGURATION.md](CONFIGURATION.md#reddit)).
+
+1. `fetch_subreddit_posts(sub, "day")` lit `/r/<sub>/top` (25 posts) pour chaque subreddit de `REDDIT_SUBREDDITS`, avec un User-Agent dédié et un délai court (`REDDIT_TIMEOUT_SECONDS`, 10 s). Si `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` sont définis, il obtient un jeton `client_credentials` (mis en cache jusqu'à son expiration) et interroge `oauth.reddit.com` ; sinon, ou si l'authentification échoue, il utilise le JSON public `www.reddit.com/r/<sub>/top.json`.
+2. `filter_posts()` garde les posts des dernières 24 h (`created_utc`) dont le score atteint `REDDIT_MIN_SCORE`, écarte les posts épinglés, NSFW et les mèmes (flair contenant meme, humour, funny, joke, shitpost, satire), dédoublonne par URL externe entre subreddits (paramètres `utm_*` et `www.` ignorés, le mieux noté est gardé), trie par score et garde `REDDIT_MAX_POSTS` posts.
+3. `build_technical_prompt()` ajoute la section « # Signaux communautaires Reddit » (titre, subreddit, score, commentaires, lien du thread, lien partagé) avec la consigne de les traiter comme des pistes à vérifier sur une source primaire. Le rapport ne gagne aucune section `##` : une discussion marquante non confirmée va au plus dans « Signaux faibles & recherche » et dans la « Note de méthode ».
+
+Reddit ne peut pas faire échouer la veille : toute erreur (HTTP, 429, délai, JSON invalide, subreddit inconnu) est journalisée (`Reddit : r/<sub> indisponible (…)`) et donne une liste vide ; le prompt est alors identique à celui sans Reddit. `GET /reddit/preview` montre les posts retenus, sans appel LLM.
 
 ### Chat sur les rapports (onglet Recherches)
 

@@ -53,7 +53,7 @@ Conversation avec l'assistant sur les rapports.
 
 | Je veux… | Comment | Ce qui se passe |
 | --- | --- | --- |
-| **Lancer la veille** | « Lancer la veille » (tableau de bord), ou le cron `POST /cron/daily` | Le LLM cherche sur le web les nouveautés des dernières 24 h, vérifie les sources et rédige le rapport (plusieurs minutes, jusqu'à 10). Les nouveautés sont extraites et deviennent sauvegardables. Une seule génération à la fois. |
+| **Lancer la veille** | « Lancer la veille » (tableau de bord), ou le cron `POST /cron/daily` | Le LLM cherche sur le web les nouveautés des dernières 24 h, vérifie les sources et rédige le rapport (plusieurs minutes, jusqu'à 10). Avec `REDDIT_ENABLED=true`, il reçoit aussi les discussions Reddit les plus votées des subreddits suivis, comme pistes à vérifier. Les nouveautés sont extraites et deviennent sauvegardables. Une seule génération à la fois. |
 | **Obtenir un résumé** | « Résumé exécutif » dans un rapport | 5 points maximum tirés du rapport, terminés par « Décision suggérée ». Enregistré et réaffiché ensuite ; peut être régénéré. |
 | **Approfondir un extrait** | Sélectionner un passage → « Approfondir » | Explication de 6 lignes maximum, à partir du rapport seulement ; enregistrée comme note « Détail ». |
 | **Définir un terme** | Sélectionner un terme → « Définir » | Définition courte et vulgarisée ; enregistrée comme note « Définition ». |
@@ -97,7 +97,7 @@ Le prompt `TECHNICAL_PROMPT` impose cette structure ; l'interface, l'extraction 
 - … (toujours présente ; « Rien de notable dans la période » sinon)
 
 ## Signaux faibles & recherche
-- repos qui montent, publications, sujets à recontrôler
+- repos qui montent, publications, discussions Reddit marquantes (si activé), sujets à recontrôler
 
 ## Note de méthode
 - fenêtre couverte, éléments issus de trackers tiers, rappel bêta ≠ production

@@ -31,6 +31,7 @@ from reportlab.platypus import Image as RLImage, Paragraph, SimpleDocTemplate, S
 
 from . import models, schemas, database
 from .newsletter import render_newsletter
+from . import reddit
 
 if TYPE_CHECKING:
     from google.oauth2.credentials import Credentials
@@ -762,11 +763,12 @@ Section toujours présente. Une puce par sujet : vulnérabilités et CVE touchan
 ## Signaux faibles & recherche
 - repos GitHub qui montent vite (avec lien)
 - publications de recherche / blogs engineering marquants (avec l’apport pratique et le lien)
+- discussions Reddit marquantes, seulement si des signaux communautaires sont fournis en fin de message (lien du thread + apport pratique ; préciser « retour communautaire, non vérifié » si aucune source primaire ne le confirme)
 - sujets à recontrôler dans les prochains jours
 
 ## Note de méthode
 - Fenêtre couverte (dates et heures).
-- Éléments issus de trackers tiers ou de médias plutôt que de sources primaires : liste-les.
+- Éléments issus de trackers tiers, de médias ou de Reddit plutôt que de sources primaires : liste-les.
 - Rappel : les éléments en bêta / preview ne sont pas disponibles en production.
 """
 
@@ -796,7 +798,22 @@ def recent_news_titles(db: Session) -> list[str]:
     return [f"{title} ({date})" if date else title for title, date in rows if title]
 
 
-def build_technical_prompt(db: Session, now: Optional[datetime] = None) -> str:
+def reddit_posts_for_watch(now: Optional[datetime] = None) -> list[dict]:
+    """Posts Reddit filtrés pour la veille ; liste vide si REDDIT_ENABLED est faux ou si Reddit échoue."""
+    if not reddit.reddit_enabled():
+        return []
+    try:
+        posts = reddit.collect_reddit_posts(period="day", now=now)
+    except Exception as e:  # collect_reddit_posts ne lève pas, sécurité supplémentaire
+        print(f"Reddit : signaux ignorés ({e})")
+        return []
+    print(f"Reddit : {len(posts)} signaux communautaires ajoutés au prompt")
+    return posts
+
+
+def build_technical_prompt(
+    db: Session, now: Optional[datetime] = None, reddit_posts: Optional[list[dict]] = None
+) -> str:
     if now is None:
         try:
             from zoneinfo import ZoneInfo
@@ -819,6 +836,9 @@ def build_technical_prompt(db: Session, now: Optional[datetime] = None) -> str:
             + "\n".join(f"- {title}" for title in titles)
             + "\n"
         )
+    if reddit_posts is None:
+        reddit_posts = reddit_posts_for_watch()
+    prompt += reddit.build_reddit_prompt_section(reddit_posts)
     return prompt
 
 
@@ -1819,6 +1839,36 @@ def get_llm_info(_=Depends(verify_token)):
         return {"provider": provider, "web_search": llm_supports_web_search(), "backend": describe_llm_backend()}
     except RuntimeError as e:
         return {"provider": os.getenv("LLM_PROVIDER", ""), "web_search": False, "backend": str(e)}
+
+
+@app.get("/reddit/preview", response_model=schemas.RedditPreview)
+def preview_reddit(
+    subreddit: Optional[str] = None,
+    period: str = "day",
+    _=Depends(verify_token),
+):
+    """Posts Reddit filtrés tels qu'ils seraient envoyés à la veille, sans appel LLM.
+    Fonctionne même avec REDDIT_ENABLED=false, pour tester la configuration."""
+    period = (period or "day").strip()
+    if period not in reddit.PERIOD_HOURS:
+        raise HTTPException(status_code=400, detail=f"Période invalide : {', '.join(reddit.PERIOD_HOURS)}")
+    if subreddit:
+        subreddit = subreddit.strip().removeprefix("r/")
+        if not reddit.is_valid_subreddit(subreddit):
+            raise HTTPException(status_code=400, detail="Nom de subreddit invalide")
+    subreddits = [subreddit] if subreddit else reddit.configured_subreddits()
+    errors: list[str] = []
+    posts = reddit.collect_reddit_posts(subreddits=subreddits, period=period, errors=errors)
+    return {
+        "enabled": reddit.reddit_enabled(),
+        "oauth": reddit.oauth_configured(),
+        "period": period,
+        "subreddits": subreddits,
+        "min_score": reddit.min_score(),
+        "max_posts": reddit.max_posts(),
+        "posts": posts,
+        "errors": errors,
+    }
 
 
 # Une seule génération de veille à la fois (bouton de l'interface ou cron).

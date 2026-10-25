@@ -113,3 +113,26 @@ class DailyRunResponse(BaseModel):
     date: str
     created: bool
     newsletter_url: str
+
+
+class RedditPost(BaseModel):
+    title: str
+    subreddit: str
+    score: int
+    num_comments: int
+    permalink: str
+    external_url: Optional[str] = None
+    created_utc: float
+    created_at: str
+    flair: Optional[str] = None
+
+
+class RedditPreview(BaseModel):
+    enabled: bool
+    oauth: bool
+    period: str
+    subreddits: List[str]
+    min_score: int
+    max_posts: int
+    posts: List[RedditPost]
+    errors: List[str]

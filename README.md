@@ -22,6 +22,10 @@ Configuration lives in `backend/.env`; every variable is described in [docs/CONF
 
 Manual start, containers (`./compose.sh start`), tests and troubleshooting: [docs/EXPLOITATION.md](docs/EXPLOITATION.md).
 
+## Reddit community signals (optional)
+
+With `REDDIT_ENABLED=true`, the daily watch also reads the top posts of the last 24 h from `REDDIT_SUBREDDITS` (default `LocalLLaMA,ClaudeAI,OpenAI,ChatGPTCoding,MachineLearning,singularity`), keeps those above `REDDIT_MIN_SCORE` (50), drops stickied/NSFW/meme posts and duplicate links, and adds at most `REDDIT_MAX_POSTS` (15) to the prompt as leads to verify on primary sources. Set `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` (a Reddit "script" app) for OAuth access — the public JSON fallback is often blocked (403) from servers. `REDDIT_USER_AGENT` and `REDDIT_TIMEOUT_SECONDS` are optional. If Reddit fails, the watch is generated exactly as without it. Check what would be sent with `GET /reddit/preview?subreddit=LocalLLaMA&period=day` (no LLM call). Details: [docs/CONFIGURATION.md](docs/CONFIGURATION.md#reddit).
+
 ## Daily run (cron) and newsletter
 
 `POST /cron/daily` generates today's watch if it does not exist yet (`?force=true` to regenerate) and returns the report id and its newsletter URL. Generation takes several minutes, so give the HTTP client a long timeout:

@@ -7,7 +7,7 @@ Veille IA (« AI Technical Watch ») génère chaque jour une veille technique s
 | Page | Contenu | Pour qui |
 | --- | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Vue d'ensemble, rôle de chaque fichier, modèle de données, couche LLM, flux clés | Développeurs |
-| [API.md](API.md) | Les 22 endpoints HTTP, authentification, codes d'erreur | Développeurs, intégrateurs (cron) |
+| [API.md](API.md) | Les 23 endpoints HTTP, authentification, codes d'erreur | Développeurs, intégrateurs (cron) |
 | [CONFIGURATION.md](CONFIGURATION.md) | Toutes les variables d'environnement, défauts et effets | Développeurs, exploitation |
 | [FONCTIONNEL.md](FONCTIONNEL.md) | Les vues de l'application, les cas d'usage, la structure d'un rapport | Utilisateurs, product owner |
 | [EXPLOITATION.md](EXPLOITATION.md) | Lancement local, conteneurs, cron quotidien, tests, dépannage | Exploitation, développeurs |

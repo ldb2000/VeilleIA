@@ -49,6 +49,22 @@ L'authentification Codex n'est pas gérée par l'application : elle vient de `co
 
 Le backend Gemini choisit la CLI si `~/.gemini/oauth_creds.json` (dans `HOME`) **et** le binaire `gemini` existent, sinon le SDK.
 
+## Reddit
+
+Signaux communautaires ajoutés au prompt de veille (voir [ARCHITECTURE.md](ARCHITECTURE.md#signaux-communautaires-reddit)). Toutes ces variables sont lues à chaque appel.
+
+| Variable | Défaut | Effet |
+| --- | --- | --- |
+| `REDDIT_ENABLED` | `false` | `true` : la veille (bouton et cron) lit les subreddits et ajoute les posts retenus au prompt. `false` : aucune requête vers Reddit, veille inchangée. `GET /reddit/preview` fonctionne dans les deux cas. |
+| `REDDIT_SUBREDDITS` | `LocalLLaMA,ClaudeAI,OpenAI,ChatGPTCoding,MachineLearning,singularity` | Subreddits lus, séparés par des virgules (préfixe `r/` accepté, noms invalides ignorés). |
+| `REDDIT_MIN_SCORE` | `50` | Score minimal d'un post. |
+| `REDDIT_MAX_POSTS` | `15` | Nombre maximal de posts ajoutés au prompt, tous subreddits confondus (les mieux notés). |
+| `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | *(vides)* | Application Reddit de type « script » (https://www.reddit.com/prefs/apps). Définis : jeton OAuth « application-only » et appels sur `oauth.reddit.com`. Vides ou refusés : JSON public `www.reddit.com/r/<sub>/top.json`. |
+| `REDDIT_USER_AGENT` | `linux:veille-ia:1.0 (veille technique IA interne)` | User-Agent envoyé à Reddit, qui exige un agent descriptif ; y ajouter `by /u/<compte>` si une application est déclarée. |
+| `REDDIT_TIMEOUT_SECONDS` | `10` | Délai de chaque requête Reddit. |
+
+Le JSON public est limité (environ 10 requêtes par minute) et Reddit le refuse souvent (403) depuis des serveurs ou des conteneurs : définir `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` pour un usage régulier (100 requêtes par minute). L'usage de l'API Reddit est soumis à ses conditions (Data API Terms) ; une veille interne non commerciale reste dans l'usage gratuit.
+
 ## Base de données
 
 | Variable | Défaut | Effet |
@@ -80,6 +96,10 @@ LLM_REPORT_TIMEOUT_SECONDS=600
 
 # OPENROUTER_API_KEY=sk-or-…
 # OPENROUTER_MODEL=openrouter/auto
+
+# REDDIT_ENABLED=true
+# REDDIT_CLIENT_ID=…
+# REDDIT_CLIENT_SECRET=…
 
 API_TOKEN=change-me
 VITE_API_TOKEN=change-me
