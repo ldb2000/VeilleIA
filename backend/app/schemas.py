@@ -118,21 +118,20 @@ class DailyRunResponse(BaseModel):
 class RedditPost(BaseModel):
     title: str
     subreddit: str
-    score: int
-    num_comments: int
+    rank: int
+    author: Optional[str] = None
     permalink: str
     external_url: Optional[str] = None
+    excerpt: Optional[str] = None
     created_utc: float
     created_at: str
-    flair: Optional[str] = None
 
 
 class RedditPreview(BaseModel):
     enabled: bool
-    oauth: bool
     period: str
     subreddits: List[str]
-    min_score: int
     max_posts: int
+    max_posts_per_sub: int
     posts: List[RedditPost]
     errors: List[str]

@@ -14,7 +14,7 @@
                  ┌───────────────▼──────────────────┐        cron externe
                  │  Backend FastAPI (uvicorn :8000) │◄────── POST /cron/daily
                  │  main.py · newsletter.py         │      Reddit (optionnel)
-                 │  reddit.py · models · schemas    │─────► top.json / oauth.reddit.com
+                 │  reddit.py · models · schemas    │─────► flux RSS www.reddit.com
                  └──────┬───────────────────┬───────┘
                         │ SQLAlchemy        │ generate_llm_content()
               ┌─────────▼────────┐   ┌──────▼───────────────────────────────┐
@@ -38,7 +38,7 @@
 | --- | --- |
 | `main.py` | Application FastAPI : CORS, authentification (`verify_token`), migrations légères, couche LLM (Codex, OpenRouter, Gemini), prompts (`TECHNICAL_PROMPT`, `CODIR_NOTE_PROMPT`, prompts inline de résumé / détail / définition / chat), extraction des news, rendu PDF (ReportLab) et DOCX (python-docx), les 23 endpoints. |
 | `newsletter.py` | Rendu déterministe d'un rapport en corps d'email HTML compatible Gmail / Outlook (`render_newsletter`). Aucun appel LLM. |
-| `reddit.py` | Signaux communautaires Reddit (optionnels, `REDDIT_ENABLED`) : lecture du top des subreddits (`fetch_subreddit_posts`, OAuth « application-only » ou JSON public), filtrage (`filter_posts`), section ajoutée au prompt de veille (`build_reddit_prompt_section`). Ne lève jamais d'exception. |
+| `reddit.py` | Signaux communautaires Reddit (optionnels, `REDDIT_ENABLED`) : lecture du top des subreddits par le flux RSS public, en une requête (`fetch_subreddit_posts`), filtrage (`filter_posts`), section ajoutée au prompt de veille (`build_reddit_prompt_section`). Ne lève jamais d'exception. |
 | `models.py` | Modèles SQLAlchemy : `Report`, `ReportSummary`, `Note`, `ChatMessage`, `NewsItem`. |
 | `schemas.py` | Schémas Pydantic des entrées / sorties d'API. |
 | `database.py` | Moteur SQLAlchemy et `SessionLocal`, à partir de `DATABASE_URL`. |
@@ -187,11 +187,12 @@ POST /cron/daily       ─┴► WATCH_GENERATION_LOCK.acquire(blocking=False) �
 
 Optionnels (`REDDIT_ENABLED=true`, désactivés par défaut ; variables dans [CONFIGURATION.md](CONFIGURATION.md#reddit)).
 
-1. `fetch_subreddit_posts(sub, "day")` lit `/r/<sub>/top` (25 posts) pour chaque subreddit de `REDDIT_SUBREDDITS`, avec un User-Agent dédié et un délai court (`REDDIT_TIMEOUT_SECONDS`, 10 s). Si `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` sont définis, il obtient un jeton `client_credentials` (mis en cache jusqu'à son expiration) et interroge `oauth.reddit.com` ; sinon, ou si l'authentification échoue, il utilise le JSON public `www.reddit.com/r/<sub>/top.json`.
-2. `filter_posts()` garde les posts des dernières 24 h (`created_utc`) dont le score atteint `REDDIT_MIN_SCORE`, écarte les posts épinglés, NSFW et les mèmes (flair contenant meme, humour, funny, joke, shitpost, satire), dédoublonne par URL externe entre subreddits (paramètres `utm_*` et `www.` ignorés, le mieux noté est gardé), trie par score et garde `REDDIT_MAX_POSTS` posts.
-3. `build_technical_prompt()` ajoute la section « # Signaux communautaires Reddit » (titre, subreddit, score, commentaires, lien du thread, lien partagé) avec la consigne de les traiter comme des pistes à vérifier sur une source primaire. Le rapport ne gagne aucune section `##` : une discussion marquante non confirmée va au plus dans « Signaux faibles & recherche » et dans la « Note de méthode ».
+1. `collect_reddit_posts()` joint les subreddits de `REDDIT_SUBREDDITS` et `fetch_subreddit_posts("A+B+C", "day")` lit **en une seule requête** le flux RSS public `www.reddit.com/r/A+B+C/top/.rss?t=day&limit=100` (Atom), avec un User-Agent descriptif et un délai court (`REDDIT_TIMEOUT_SECONDS`, 10 s). Pas d'OAuth : Reddit n'accorde pas d'application et refuse son API JSON sans compte (403) ; le RSS est la seule page lisible sans authentification, à raison d'environ une requête par minute. Après un 429, un seul nouvel essai si Reddit annonce une attente de 65 s au plus (`x-ratelimit-reset` / `Retry-After`).
+2. `parse_feed()` extrait de chaque entrée : titre, subreddit (`category`), rang dans le top (1 = le plus voté), auteur, lien du thread, lien partagé (lien `[link]` du contenu, s'il ne pointe pas vers Reddit), extrait du texte (280 caractères), date de publication. Le RSS n'a ni score, ni commentaires, ni flair, ni indicateurs épinglé / NSFW.
+3. `filter_posts()` garde les posts de la période (24 h pour `day`), écarte les mèmes par heuristique (mot-clé dans le titre, ou image / vidéo au titre de moins de 5 mots), dédoublonne par lien du thread et par URL externe (paramètres `utm_*` et `www.` ignorés, le mieux classé gagne), garde au plus `REDDIT_MAX_POSTS_PER_SUB` posts par subreddit et `REDDIT_MAX_POSTS` au total, dans l'ordre du top.
+4. `build_technical_prompt()` ajoute la section « # Signaux communautaires Reddit » (titre, subreddit, rang, lien du thread, lien partagé, extrait) avec la consigne de les traiter comme des pistes à vérifier sur une source primaire. Le rapport ne gagne aucune section `##` : une discussion marquante non confirmée va au plus dans « Signaux faibles & recherche » et dans la « Note de méthode ».
 
-Reddit ne peut pas faire échouer la veille : toute erreur (HTTP, 429, délai, JSON invalide, subreddit inconnu) est journalisée (`Reddit : r/<sub> indisponible (…)`) et donne une liste vide ; le prompt est alors identique à celui sans Reddit. `GET /reddit/preview` montre les posts retenus, sans appel LLM.
+Reddit ne peut pas faire échouer la veille : toute erreur (HTTP, 403, 429, délai, XML invalide, subreddit inconnu) est journalisée (`Reddit : r/<subs> indisponible (…)`) et donne une liste vide ; le prompt est alors identique à celui sans Reddit. `GET /reddit/preview` montre les posts retenus, sans appel LLM.
 
 ### Chat sur les rapports (onglet Recherches)
 

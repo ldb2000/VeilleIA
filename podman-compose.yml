@@ -13,9 +13,9 @@ services:
     environment:
       - DATABASE_URL=sqlite:///./data/sql_app.db
       # Reddit (signaux communautaires de la veille) : à définir dans backend/.env, lu via env_file.
-      # REDDIT_ENABLED (false par défaut), REDDIT_SUBREDDITS, REDDIT_MIN_SCORE (50), REDDIT_MAX_POSTS (15),
-      # REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET (OAuth recommandé : le JSON public est souvent refusé depuis un conteneur),
-      # REDDIT_USER_AGENT, REDDIT_TIMEOUT_SECONDS (10). Voir docs/CONFIGURATION.md#reddit.
+      # REDDIT_ENABLED (false par défaut), REDDIT_SUBREDDITS, REDDIT_MAX_POSTS (15), REDDIT_MAX_POSTS_PER_SUB (5),
+      # REDDIT_USER_AGENT, REDDIT_TIMEOUT_SECONDS (10). Flux RSS public, sans compte Reddit ; une requête par veille.
+      # Voir docs/CONFIGURATION.md#reddit.
     volumes:
       - ./data:/app/data
       - ./backend/app:/app/app

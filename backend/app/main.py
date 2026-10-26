@@ -1847,8 +1847,8 @@ def preview_reddit(
     period: str = "day",
     _=Depends(verify_token),
 ):
-    """Posts Reddit filtrés tels qu'ils seraient envoyés à la veille, sans appel LLM.
-    Fonctionne même avec REDDIT_ENABLED=false, pour tester la configuration."""
+    """Posts Reddit filtrés tels qu'ils seraient envoyés à la veille, sans appel LLM (flux RSS,
+    une requête). Fonctionne même avec REDDIT_ENABLED=false, pour tester la configuration."""
     period = (period or "day").strip()
     if period not in reddit.PERIOD_HOURS:
         raise HTTPException(status_code=400, detail=f"Période invalide : {', '.join(reddit.PERIOD_HOURS)}")
@@ -1861,11 +1861,10 @@ def preview_reddit(
     posts = reddit.collect_reddit_posts(subreddits=subreddits, period=period, errors=errors)
     return {
         "enabled": reddit.reddit_enabled(),
-        "oauth": reddit.oauth_configured(),
         "period": period,
         "subreddits": subreddits,
-        "min_score": reddit.min_score(),
         "max_posts": reddit.max_posts(),
+        "max_posts_per_sub": reddit.max_posts_per_sub(),
         "posts": posts,
         "errors": errors,
     }

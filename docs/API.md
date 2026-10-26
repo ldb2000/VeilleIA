@@ -139,21 +139,22 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 
 ### Reddit
 
-**`GET /reddit/preview?subreddit=&period=`** — posts Reddit filtrés, tels qu'ils seraient ajoutés au prompt de veille, **sans appel LLM**. Sert à régler la configuration ; fonctionne même avec `REDDIT_ENABLED=false` (le champ `enabled` indique si la veille les utilisera).
+**`GET /reddit/preview?subreddit=&period=`** — posts Reddit filtrés, tels qu'ils seraient ajoutés au prompt de veille, **sans appel LLM** (flux RSS public, une seule requête). Sert à régler la configuration ; fonctionne même avec `REDDIT_ENABLED=false` (le champ `enabled` indique si la veille les utilisera).
 
 - `subreddit` : un seul subreddit (avec ou sans `r/`) ; vide ou absent : ceux de `REDDIT_SUBREDDITS`. Nom invalide : 400.
 - `period` : `hour`, `day` (défaut), `week`, `month`, `year` ou `all` ; la fenêtre de filtrage suit la période (24 h pour `day`, aucune pour `all`). Autre valeur : 400.
-- Reddit indisponible : 200 avec `posts` vide et la cause dans `errors`.
+- Reddit indisponible ou limite de requêtes atteinte : 200 avec `posts` vide et la cause dans `errors`. Reddit n'accepte qu'environ une requête anonyme par minute : attendre une minute entre deux appels.
+- Le RSS ne donne pas de score : `rank` est la position dans le top de la période (1 = le plus voté, tous subreddits confondus).
 
 ```json
 {
-  "enabled": true, "oauth": true, "period": "day",
-  "subreddits": ["LocalLLaMA"], "min_score": 50, "max_posts": 15,
+  "enabled": true, "period": "day",
+  "subreddits": ["LocalLLaMA"], "max_posts": 15, "max_posts_per_sub": 5,
   "posts": [{
-    "title": "…", "subreddit": "LocalLLaMA", "score": 812, "num_comments": 143,
+    "title": "…", "subreddit": "LocalLLaMA", "rank": 1, "author": "/u/…",
     "permalink": "https://www.reddit.com/r/LocalLLaMA/comments/…/",
-    "external_url": "https://huggingface.co/…", "created_utc": 1792900000.0,
-    "created_at": "2026-10-25T05:46:40+00:00", "flair": "New Model"
+    "external_url": "https://huggingface.co/…", "excerpt": "Début du texte du post…",
+    "created_utc": 1792900000.0, "created_at": "2026-10-25T05:46:40+00:00"
   }],
   "errors": []
 }

@@ -1,38 +1,51 @@
 """Lecture de subreddits pour enrichir la veille (signaux communautaires).
 
+Reddit n'accorde pas d'application (pas d'OAuth) et refuse son API JSON sans compte
+(403) : on lit donc le flux RSS public, la seule page accessible sans authentification.
 Module autonome (pas de dépendance à l'application) :
-- fetch_subreddit_posts() lit le top d'un subreddit (OAuth « application-only » si
-  REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET sont définis, sinon JSON public) ;
-- filter_posts() applique fenêtre temporelle, score minimal, exclusions et dédoublonnage ;
+- fetch_subreddit_posts() lit le top RSS d'un ou plusieurs subreddits en UNE requête
+  (`/r/A+B+C/top/.rss`), car Reddit limite les accès anonymes à environ une requête par minute ;
+- filter_posts() applique fenêtre temporelle, exclusions, dédoublonnage et plafonds ;
 - collect_reddit_posts() enchaîne les deux sur les subreddits configurés ;
 - build_reddit_prompt_section() formate les posts pour le prompt de veille.
 
-Reddit ne doit jamais faire échouer la veille : toute erreur (HTTP, 429, délai, JSON
+Le RSS ne donne ni score, ni nombre de commentaires, ni indicateurs épinglé / NSFW / flair :
+le rang dans le top (trié par score par Reddit) remplace le score.
+
+Reddit ne doit jamais faire échouer la veille : toute erreur (HTTP, 429, délai, XML
 invalide) est journalisée et donne une liste vide.
 """
 
 import os
 import re
-import threading
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import Optional
+from html import unescape
+from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
 DEFAULT_SUBREDDITS = ("LocalLLaMA", "ClaudeAI", "OpenAI", "ChatGPTCoding", "MachineLearning", "singularity")
+# Reddit accepte un User-Agent descriptif sur le RSS (un User-Agent de navigateur est davantage limité).
 DEFAULT_USER_AGENT = "linux:veille-ia:1.0 (veille technique IA interne)"
-PUBLIC_BASE_URL = "https://www.reddit.com"
-OAUTH_BASE_URL = "https://oauth.reddit.com"
-TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
-FETCH_LIMIT = 25
+BASE_URL = "https://www.reddit.com"
+FETCH_LIMIT = 100  # maximum accepté par Reddit pour un flux
+RATE_LIMIT_MAX_WAIT_SECONDS = 65  # attente maximale avant l'unique nouvel essai après un 429
+EXCERPT_MAX_CHARS = 280
 
+ATOM_NS = {"a": "http://www.w3.org/2005/Atom"}
 # Fenêtre de filtrage associée à chaque période Reddit (None : pas de limite).
 PERIOD_HOURS = {"hour": 1, "day": 24, "week": 24 * 7, "month": 24 * 31, "year": 24 * 366, "all": None}
 SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{2,21}$")
-MEME_FLAIR_RE = re.compile(r"meme|humou?r|funny|joke|shitpost|satire", re.IGNORECASE)
+MEME_TITLE_RE = re.compile(r"\b(meme|memes|shitpost|humou?r|funny|joke|satire)\b|\[(humou?r|meme|funny)\]", re.IGNORECASE)
+MEDIA_HOSTS = ("i.redd.it", "v.redd.it", "preview.redd.it", "i.imgur.com", "imgur.com")
+MEDIA_SHORT_TITLE_WORDS = 5  # image / vidéo dont le titre fait moins de 5 mots : traité comme mème
 TRACKING_PARAM_PREFIXES = ("utm_", "ref", "fbclid", "gclid")
+LINK_RE = re.compile(r'<a href="([^"]+)">\s*\[link\]\s*</a>')
+SELFTEXT_RE = re.compile(r'<div class="md">(.*?)</div>', re.DOTALL)
+TAG_RE = re.compile(r"<[^>]+>")
 
 
 # --- Configuration (lue à chaque appel) -------------------------------------------------
@@ -67,12 +80,12 @@ def configured_subreddits() -> list[str]:
     return valid or list(DEFAULT_SUBREDDITS)
 
 
-def min_score() -> int:
-    return _env_int("REDDIT_MIN_SCORE", 50)
-
-
 def max_posts() -> int:
     return max(0, _env_int("REDDIT_MAX_POSTS", 15))
+
+
+def max_posts_per_sub() -> int:
+    return max(0, _env_int("REDDIT_MAX_POSTS_PER_SUB", 5))
 
 
 def timeout_seconds() -> float:
@@ -86,54 +99,11 @@ def user_agent() -> str:
     return os.getenv("REDDIT_USER_AGENT", "").strip() or DEFAULT_USER_AGENT
 
 
-def oauth_configured() -> bool:
-    return bool(os.getenv("REDDIT_CLIENT_ID", "").strip() and os.getenv("REDDIT_CLIENT_SECRET", "").strip())
-
-
 def is_valid_subreddit(name: str) -> bool:
     return bool(SUBREDDIT_RE.match(name or ""))
 
 
-# --- OAuth « application-only » -----------------------------------------------------------
-
-_TOKEN_LOCK = threading.Lock()
-_TOKEN_CACHE: dict = {"token": None, "expires_at": 0.0}
-
-
-def reset_token_cache() -> None:
-    with _TOKEN_LOCK:
-        _TOKEN_CACHE["token"] = None
-        _TOKEN_CACHE["expires_at"] = 0.0
-
-
-def get_app_token(client: httpx.Client) -> Optional[str]:
-    """Jeton client_credentials (mis en cache jusqu'à 60 s avant expiration). None en cas d'échec."""
-    if not oauth_configured():
-        return None
-    with _TOKEN_LOCK:
-        if _TOKEN_CACHE["token"] and time.time() < _TOKEN_CACHE["expires_at"]:
-            return _TOKEN_CACHE["token"]
-        try:
-            response = client.post(
-                TOKEN_URL,
-                auth=(os.getenv("REDDIT_CLIENT_ID", "").strip(), os.getenv("REDDIT_CLIENT_SECRET", "").strip()),
-                data={"grant_type": "client_credentials"},
-                headers={"User-Agent": user_agent()},
-            )
-            response.raise_for_status()
-            payload = response.json()
-            token = payload.get("access_token")
-            if not token:
-                raise ValueError(payload.get("error") or "réponse sans access_token")
-        except Exception as e:  # repli sur le JSON public
-            print(f"Reddit : échec de l'authentification OAuth ({describe_error(e)}), repli sur le JSON public")
-            return None
-        _TOKEN_CACHE["token"] = token
-        _TOKEN_CACHE["expires_at"] = time.time() + max(0, float(payload.get("expires_in", 3600)) - 60)
-        return token
-
-
-# --- Lecture et normalisation --------------------------------------------------------------
+# --- Lecture et parsing du flux Atom -------------------------------------------------------
 
 
 def describe_error(error: Exception) -> str:
@@ -144,49 +114,94 @@ def describe_error(error: Exception) -> str:
         return f"HTTP {status}"
     if isinstance(error, httpx.TimeoutException):
         return "délai dépassé"
+    if isinstance(error, ET.ParseError):
+        return f"flux RSS invalide ({error})"
     return f"{type(error).__name__}: {error}"
 
 
+def _host(url: str) -> str:
+    return (urlsplit(url).hostname or "").lower()
+
+
 def _is_reddit_url(url: str) -> bool:
-    host = (urlsplit(url).hostname or "").lower()
+    host = _host(url)
     return host == "redd.it" or host.endswith(".redd.it") or host == "reddit.com" or host.endswith(".reddit.com")
 
 
-def normalize_post(data: dict) -> Optional[dict]:
-    """Champs utiles d'un post (objet `data` d'un enfant `t3`). None si inexploitable."""
-    title = (data.get("title") or "").strip()
-    permalink = data.get("permalink") or ""
-    created = data.get("created_utc")
-    if not title or not permalink or created is None:
+def _is_media_url(url: Optional[str]) -> bool:
+    return bool(url) and _host(url) in MEDIA_HOSTS
+
+
+def _text(element: Optional[ET.Element]) -> str:
+    return (element.text or "").strip() if element is not None else ""
+
+
+def _clean_excerpt(html: str) -> Optional[str]:
+    match = SELFTEXT_RE.search(html)
+    if not match:
         return None
-    url = (data.get("url_overridden_by_dest") or data.get("url") or "").strip()
-    external_url = None if data.get("is_self") or not url or _is_reddit_url(url) else url
-    created_utc = float(created)
+    text = re.sub(r"\s+", " ", unescape(TAG_RE.sub(" ", match.group(1)))).strip()
+    if not text:
+        return None
+    return text if len(text) <= EXCERPT_MAX_CHARS else text[: EXCERPT_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _parse_date(value: str) -> Optional[float]:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def parse_entry(entry: ET.Element, rank: int) -> Optional[dict]:
+    """Champs utiles d'une entrée Atom. None si inexploitable."""
+    title = unescape(_text(entry.find("a:title", ATOM_NS)))
+    link = entry.find("a:link", ATOM_NS)
+    permalink = (link.get("href") or "").strip() if link is not None else ""
+    created_utc = _parse_date(_text(entry.find("a:published", ATOM_NS)) or _text(entry.find("a:updated", ATOM_NS)))
+    if not title or not permalink or created_utc is None:
+        return None
+    category = entry.find("a:category", ATOM_NS)
+    subreddit = (category.get("term") or "").strip() if category is not None else ""
+    if not subreddit:
+        match = re.search(r"/r/([^/]+)/", permalink)
+        subreddit = match.group(1) if match else ""
+    content = _text(entry.find("a:content", ATOM_NS))
+    link_match = LINK_RE.search(content)
+    shared = unescape(link_match.group(1)).strip() if link_match else ""
     return {
         "title": title,
-        "subreddit": data.get("subreddit") or "",
-        "score": int(data.get("score") or 0),
-        "num_comments": int(data.get("num_comments") or 0),
-        "permalink": PUBLIC_BASE_URL + permalink if permalink.startswith("/") else permalink,
-        "external_url": external_url,
+        "subreddit": subreddit,
+        "rank": rank,
+        "author": _text(entry.find("a:author/a:name", ATOM_NS)) or None,
+        "permalink": permalink,
+        "external_url": shared if shared and not _is_reddit_url(shared) else None,
+        "media": _is_media_url(shared),
+        "excerpt": _clean_excerpt(content),
         "created_utc": created_utc,
         "created_at": datetime.fromtimestamp(created_utc, tz=timezone.utc).isoformat(),
-        "flair": (data.get("link_flair_text") or "").strip() or None,
-        "stickied": bool(data.get("stickied")),
-        "nsfw": bool(data.get("over_18")),
     }
 
 
-def parse_listing(payload: dict) -> list[dict]:
-    children = ((payload or {}).get("data") or {}).get("children") or []
+def parse_feed(xml_text: str) -> list[dict]:
+    """Posts d'un flux Atom Reddit, rang 1 = premier du top. Lève ET.ParseError si le XML est invalide."""
+    root = ET.fromstring(xml_text)
     posts = []
-    for child in children:
-        if child.get("kind") != "t3":
-            continue
-        post = normalize_post(child.get("data") or {})
+    for entry in root.findall("a:entry", ATOM_NS):
+        post = parse_entry(entry, rank=len(posts) + 1)
         if post:
             posts.append(post)
     return posts
+
+
+def _retry_delay(response: httpx.Response) -> Optional[float]:
+    for header in ("retry-after", "x-ratelimit-reset"):
+        try:
+            value = float(response.headers.get(header, ""))
+        except ValueError:
+            continue
+        return value if 0 <= value <= RATE_LIMIT_MAX_WAIT_SECONDS else None
+    return None
 
 
 def fetch_subreddit_posts(
@@ -194,10 +209,15 @@ def fetch_subreddit_posts(
     period: str = "day",
     client: Optional[httpx.Client] = None,
     errors: Optional[list] = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> list[dict]:
-    """Top du subreddit sur la période, normalisé et non filtré. Liste vide en cas d'erreur."""
-    if not is_valid_subreddit(subreddit) or period not in PERIOD_HOURS:
-        message = f"r/{subreddit} : subreddit ou période invalide ({period})"
+    """Top RSS d'un subreddit, ou de plusieurs joints par « + » (une seule requête), normalisé et
+    non filtré. Après un 429, un seul nouvel essai si Reddit annonce une attente courte.
+    Liste vide en cas d'erreur."""
+    names = [name for name in (subreddit or "").split("+") if name]
+    label = "r/" + "+".join(names)
+    if not names or not all(is_valid_subreddit(name) for name in names) or period not in PERIOD_HOURS:
+        message = f"{label or 'r/?'} : subreddit ou période invalide ({period})"
         print(f"Reddit : {message}")
         if errors is not None:
             errors.append(message)
@@ -206,19 +226,20 @@ def fetch_subreddit_posts(
     if own_client:
         client = httpx.Client(timeout=timeout_seconds(), follow_redirects=True)
     try:
-        params = {"t": period, "limit": FETCH_LIMIT, "raw_json": 1}
-        headers = {"User-Agent": user_agent()}
-        token = get_app_token(client)
-        if token:
-            url = f"{OAUTH_BASE_URL}/r/{subreddit}/top"
-            headers["Authorization"] = f"Bearer {token}"
-        else:
-            url = f"{PUBLIC_BASE_URL}/r/{subreddit}/top.json"
+        url = f"{BASE_URL}/r/{'+'.join(names)}/top/.rss"
+        params = {"t": period, "limit": FETCH_LIMIT}
+        headers = {"User-Agent": user_agent(), "Accept": "application/atom+xml"}
         response = client.get(url, params=params, headers=headers)
+        if response.status_code == 429:
+            delay = _retry_delay(response)
+            if delay is not None:
+                print(f"Reddit : 429 sur {label}, nouvel essai dans {delay:.0f} s")
+                sleep(delay + 1)
+                response = client.get(url, params=params, headers=headers)
         response.raise_for_status()
-        return parse_listing(response.json())
+        return parse_feed(response.text)
     except Exception as e:
-        message = f"r/{subreddit} indisponible ({describe_error(e)})"
+        message = f"{label} indisponible ({describe_error(e)})"
         print(f"Reddit : {message}")
         if errors is not None:
             errors.append(message)
@@ -239,47 +260,52 @@ def canonical_url(url: str) -> str:
     return urlunsplit(("", host, path, urlencode(query), ""))
 
 
+def is_meme(post: dict) -> bool:
+    """Heuristique (le RSS n'a pas de flair) : mot-clé de mème dans le titre, ou image / vidéo
+    avec un titre très court (« Uh oh », « lol »…)."""
+    if MEME_TITLE_RE.search(post["title"]):
+        return True
+    return bool(post.get("media")) and len(post["title"].split()) < MEDIA_SHORT_TITLE_WORDS
+
+
 def filter_posts(
     posts: list[dict],
     now: Optional[datetime] = None,
     period: str = "day",
-    score_threshold: Optional[int] = None,
     limit: Optional[int] = None,
+    per_sub_limit: Optional[int] = None,
 ) -> list[dict]:
-    """Fenêtre de la période (24 h pour `day`), score minimal, sans épinglés / NSFW / mèmes,
-    dédoublonnés par URL externe (le mieux noté gagne), triés par score décroissant."""
+    """Fenêtre de la période (24 h pour `day`), sans mèmes, dédoublonnés par permalink et par
+    URL externe (le mieux classé gagne), au plus `per_sub_limit` par subreddit pour que les gros
+    subreddits n'écrasent pas les autres, `limit` au total, dans l'ordre du top."""
     now_ts = (now or datetime.now(timezone.utc)).timestamp()
     hours = PERIOD_HOURS.get(period, 24)
-    threshold = min_score() if score_threshold is None else score_threshold
     cap = max_posts() if limit is None else limit
+    per_sub = max_posts_per_sub() if per_sub_limit is None else per_sub_limit
 
-    kept = []
-    for post in posts:
-        if post["stickied"] or post["nsfw"]:
-            continue
-        if post["flair"] and MEME_FLAIR_RE.search(post["flair"]):
-            continue
-        if post["score"] < threshold:
-            continue
-        if hours is not None and not (now_ts - hours * 3600 <= post["created_utc"] <= now_ts + 300):
-            continue
-        kept.append(post)
-
-    kept.sort(key=lambda p: (p["score"], p["num_comments"]), reverse=True)
     seen_urls: set[str] = set()
     seen_permalinks: set[str] = set()
-    unique = []
-    for post in kept:
-        if post["permalink"] in seen_permalinks:
+    per_sub_count: dict[str, int] = {}
+    kept = []
+    for post in sorted(posts, key=lambda p: p["rank"]):
+        if hours is not None and not (now_ts - hours * 3600 <= post["created_utc"] <= now_ts + 300):
             continue
-        if post["external_url"]:
-            key = canonical_url(post["external_url"])
-            if key in seen_urls:
-                continue
-            seen_urls.add(key)
+        if is_meme(post) or post["permalink"] in seen_permalinks:
+            continue
+        key = canonical_url(post["external_url"]) if post["external_url"] else None
+        if key and key in seen_urls:
+            continue
+        sub = post["subreddit"].lower()
+        if per_sub_count.get(sub, 0) >= per_sub:
+            continue
+        per_sub_count[sub] = per_sub_count.get(sub, 0) + 1
         seen_permalinks.add(post["permalink"])
-        unique.append(post)
-    return unique[:cap]
+        if key:
+            seen_urls.add(key)
+        kept.append(post)
+        if len(kept) >= cap:
+            break
+    return kept
 
 
 def collect_reddit_posts(
@@ -288,20 +314,13 @@ def collect_reddit_posts(
     now: Optional[datetime] = None,
     client: Optional[httpx.Client] = None,
     errors: Optional[list] = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> list[dict]:
-    """Posts filtrés de tous les subreddits (configurés par défaut). Ne lève jamais d'exception."""
+    """Posts filtrés de tous les subreddits (configurés par défaut), lus en une requête.
+    Ne lève jamais d'exception."""
     try:
         names = subreddits or configured_subreddits()
-        own_client = client is None
-        if own_client:
-            client = httpx.Client(timeout=timeout_seconds(), follow_redirects=True)
-        try:
-            posts: list[dict] = []
-            for name in names:
-                posts.extend(fetch_subreddit_posts(name, period, client=client, errors=errors))
-        finally:
-            if own_client:
-                client.close()
+        posts = fetch_subreddit_posts("+".join(names), period, client=client, errors=errors, sleep=sleep)
         return filter_posts(posts, now=now, period=period)
     except Exception as e:
         print(f"Reddit : collecte abandonnée ({describe_error(e)})")
@@ -317,18 +336,18 @@ def build_reddit_prompt_section(posts: list[dict]) -> str:
     lines = [
         "",
         "# Signaux communautaires Reddit",
-        "Discussions les plus votées des dernières 24h sur les subreddits suivis. Ce sont des pistes, pas des sources : "
-        "vérifie chaque fait sur une source primaire (annonce officielle, documentation, dépôt, article) avant de l'utiliser, "
-        "cite cette source primaire, et ignore ce qui n'est pas confirmé. Ne crée pas de section dédiée à Reddit : "
-        "une discussion marquante sans source primaire va au plus dans « Signaux faibles & recherche » "
-        "(lien du thread + apport pratique), et se liste dans la « Note de méthode ».",
+        "Discussions les plus votées des dernières 24h sur les subreddits suivis (rang dans le top du jour, "
+        "1 = la plus votée). Ce sont des pistes, pas des sources : vérifie chaque fait sur une source primaire "
+        "(annonce officielle, documentation, dépôt, article) avant de l'utiliser, cite cette source primaire, "
+        "et ignore ce qui n'est pas confirmé. Ne crée pas de section dédiée à Reddit : une discussion marquante "
+        "sans source primaire va au plus dans « Signaux faibles & recherche » (lien du thread + apport pratique), "
+        "et se liste dans la « Note de méthode ».",
     ]
     for post in posts:
-        line = (
-            f"- {post['title']} — r/{post['subreddit']}, score {post['score']}, "
-            f"{post['num_comments']} commentaires — thread : {post['permalink']}"
-        )
+        line = f"- {post['title']} — r/{post['subreddit']}, rang {post['rank']} — thread : {post['permalink']}"
         if post.get("external_url"):
             line += f" — lien partagé : {post['external_url']}"
+        if post.get("excerpt"):
+            line += f" — extrait : « {post['excerpt']} »"
         lines.append(line)
     return "\n".join(lines) + "\n"

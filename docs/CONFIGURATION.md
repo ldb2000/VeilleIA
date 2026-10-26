@@ -56,14 +56,17 @@ Signaux communautaires ajoutés au prompt de veille (voir [ARCHITECTURE.md](ARCH
 | Variable | Défaut | Effet |
 | --- | --- | --- |
 | `REDDIT_ENABLED` | `false` | `true` : la veille (bouton et cron) lit les subreddits et ajoute les posts retenus au prompt. `false` : aucune requête vers Reddit, veille inchangée. `GET /reddit/preview` fonctionne dans les deux cas. |
-| `REDDIT_SUBREDDITS` | `LocalLLaMA,ClaudeAI,OpenAI,ChatGPTCoding,MachineLearning,singularity` | Subreddits lus, séparés par des virgules (préfixe `r/` accepté, noms invalides ignorés). |
-| `REDDIT_MIN_SCORE` | `50` | Score minimal d'un post. |
-| `REDDIT_MAX_POSTS` | `15` | Nombre maximal de posts ajoutés au prompt, tous subreddits confondus (les mieux notés). |
-| `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | *(vides)* | Application Reddit de type « script » (https://www.reddit.com/prefs/apps). Définis : jeton OAuth « application-only » et appels sur `oauth.reddit.com`. Vides ou refusés : JSON public `www.reddit.com/r/<sub>/top.json`. |
-| `REDDIT_USER_AGENT` | `linux:veille-ia:1.0 (veille technique IA interne)` | User-Agent envoyé à Reddit, qui exige un agent descriptif ; y ajouter `by /u/<compte>` si une application est déclarée. |
-| `REDDIT_TIMEOUT_SECONDS` | `10` | Délai de chaque requête Reddit. |
+| `REDDIT_SUBREDDITS` | `LocalLLaMA,ClaudeAI,OpenAI,ChatGPTCoding,MachineLearning,singularity` | Subreddits lus, séparés par des virgules (préfixe `r/` accepté, noms invalides ignorés). Tous sont lus en une seule requête. |
+| `REDDIT_MAX_POSTS` | `15` | Nombre maximal de posts ajoutés au prompt, tous subreddits confondus (les mieux classés). |
+| `REDDIT_MAX_POSTS_PER_SUB` | `5` | Nombre maximal de posts par subreddit, pour que les plus gros subreddits ne prennent pas toute la place. |
+| `REDDIT_USER_AGENT` | `linux:veille-ia:1.0 (veille technique IA interne)` | User-Agent envoyé à Reddit. Garder un agent descriptif : un User-Agent de navigateur est davantage limité. |
+| `REDDIT_TIMEOUT_SECONDS` | `10` | Délai de la requête Reddit. |
 
-Le JSON public est limité (environ 10 requêtes par minute) et Reddit le refuse souvent (403) depuis des serveurs ou des conteneurs : définir `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` pour un usage régulier (100 requêtes par minute). L'usage de l'API Reddit est soumis à ses conditions (Data API Terms) ; une veille interne non commerciale reste dans l'usage gratuit.
+Pas d'identifiants : Reddit n'accorde pas d'application et refuse son API JSON sans compte (403). L'application lit donc le **flux RSS public** `https://www.reddit.com/r/A+B+C/top/.rss?t=day&limit=100`, en une requête pour tous les subreddits, car Reddit n'accepte qu'environ **une requête anonyme par minute** par adresse IP (au-delà : 429 ; l'application réessaie une fois si Reddit annonce une attente de 65 s au plus). Limites du RSS :
+
+- pas de score ni de nombre de commentaires : le rang dans le top (trié par score par Reddit) en tient lieu ;
+- pas de flair ni d'indicateurs épinglé / NSFW : les mèmes sont écartés par heuristique (mot-clé dans le titre, ou image / vidéo au titre de moins de 5 mots) ;
+- 100 posts au plus pour l'ensemble des subreddits : les petits subreddits (ChatGPTCoding, MachineLearning) peuvent être absents un jour où les gros sont très actifs.
 
 ## Base de données
 
@@ -98,8 +101,7 @@ LLM_REPORT_TIMEOUT_SECONDS=600
 # OPENROUTER_MODEL=openrouter/auto
 
 # REDDIT_ENABLED=true
-# REDDIT_CLIENT_ID=…
-# REDDIT_CLIENT_SECRET=…
+# REDDIT_SUBREDDITS=LocalLLaMA,ClaudeAI,OpenAI
 
 API_TOKEN=change-me
 VITE_API_TOKEN=change-me
