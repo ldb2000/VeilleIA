@@ -33,6 +33,7 @@ from . import models, schemas, database
 from .newsletter import render_newsletter
 from . import reddit
 from . import mailer
+from . import m365_roadmap
 
 if TYPE_CHECKING:
     from google.oauth2.credentials import Credentials
@@ -103,6 +104,20 @@ def deserialize_report_ids(report_ids_raw: Optional[str]) -> Optional[list[int]]
     return value if isinstance(value, list) else None
 
 
+# Types de rapports. Les « veilles » (technical_watch, copilot_watch) partagent le même format de sortie :
+# extraction des news, vue structurée, newsletter et PDF fonctionnent sur les deux.
+WATCH_REPORT_TYPES = ("technical_watch", "copilot_watch")
+REPORT_TYPE_LABELS = {
+    "technical_watch": "Analyse de veille",
+    "copilot_watch": "Veille Microsoft Copilot",
+    "codir_note": "Note CODIR",
+}
+
+
+def report_type_label(report_type: Optional[str]) -> str:
+    return REPORT_TYPE_LABELS.get(report_type or "technical_watch", "Analyse de veille")
+
+
 CHAT_REPORT_CONTEXT_MAX_CHARS = int(os.getenv("CHAT_REPORT_CONTEXT_MAX_CHARS", "24000"))
 CHAT_HISTORY_MAX_MESSAGES = 6
 CHAT_HISTORY_MESSAGE_MAX_CHARS = 2000
@@ -110,8 +125,7 @@ CHAT_HISTORY_MESSAGE_MAX_CHARS = 2000
 
 def build_report_chat_context(db: Session, report: models.Report) -> str:
     """Rapport complet + résumé + notes, pour que la recherche voie les nouveautés détaillées."""
-    title = "Note CODIR" if report.report_type == "codir_note" else "Analyse de veille"
-    parts = [f"## Rapport {report.id} · {title} du {report.date}"]
+    parts = [f"## Rapport {report.id} · {report_type_label(report.report_type)} du {report.date}"]
 
     summary = db.query(models.ReportSummary).filter(models.ReportSummary.report_id == report.id).first()
     if summary and summary.content.strip():
@@ -779,12 +793,12 @@ RECENT_NEWS_LOOKBACK_REPORTS = 5
 RECENT_NEWS_MAX_TITLES = 60
 
 
-def recent_news_titles(db: Session) -> list[str]:
-    """Titres des nouveautés des derniers rapports, pour éviter de les répéter."""
+def recent_news_titles(db: Session, report_type: str = "technical_watch") -> list[str]:
+    """Titres des nouveautés des derniers rapports du même type, pour éviter de les répéter."""
     report_ids = [
         row[0]
         for row in db.query(models.Report.id)
-        .filter(models.Report.report_type == "technical_watch")
+        .filter(models.Report.report_type == report_type)
         .order_by(models.Report.created_at.desc())
         .limit(RECENT_NEWS_LOOKBACK_REPORTS)
         .all()
@@ -814,34 +828,154 @@ def reddit_posts_for_watch(now: Optional[datetime] = None) -> list[dict]:
     return posts
 
 
+def now_paris() -> datetime:
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Europe/Paris"))
+    except Exception:
+        return datetime.now()
+
+
+def build_period_header(now: datetime, days: int) -> str:
+    start = now - timedelta(days=days)
+    return (
+        f"Date du jour : {now.strftime('%Y-%m-%d')}. "
+        f"Période couverte : du {start.strftime('%Y-%m-%d %H:%M')} au {now.strftime('%Y-%m-%d %H:%M')} (heure de Paris).\n\n"
+    )
+
+
+def build_already_covered_section(db: Session, report_type: str) -> str:
+    titles = recent_news_titles(db, report_type)
+    if not titles:
+        return ""
+    return (
+        "\n# Déjà couvert dans les rapports précédents\n"
+        "Ne répète pas ces sujets, sauf fait nouveau publié dans la période ; dans ce cas, "
+        "commence le titre par « Mise à jour : » et décris uniquement ce qui a changé.\n"
+        + "\n".join(f"- {title}" for title in titles)
+        + "\n"
+    )
+
+
 def build_technical_prompt(
     db: Session, now: Optional[datetime] = None, reddit_posts: Optional[list[dict]] = None
 ) -> str:
     if now is None:
-        try:
-            from zoneinfo import ZoneInfo
-
-            now = datetime.now(ZoneInfo("Europe/Paris"))
-        except Exception:
-            now = datetime.now()
-    start = now - timedelta(days=1)
-    header = (
-        f"Date du jour : {now.strftime('%Y-%m-%d')}. "
-        f"Période couverte : du {start.strftime('%Y-%m-%d %H:%M')} au {now.strftime('%Y-%m-%d %H:%M')} (heure de Paris).\n\n"
-    )
-    prompt = header + TECHNICAL_PROMPT
-    titles = recent_news_titles(db)
-    if titles:
-        prompt += (
-            "\n# Déjà couvert dans les rapports précédents\n"
-            "Ne répète pas ces sujets, sauf fait nouveau publié dans la période ; dans ce cas, "
-            "commence le titre par « Mise à jour : » et décris uniquement ce qui a changé.\n"
-            + "\n".join(f"- {title}" for title in titles)
-            + "\n"
-        )
+        now = now_paris()
+    prompt = build_period_header(now, 1) + TECHNICAL_PROMPT
+    prompt += build_already_covered_section(db, "technical_watch")
     if reddit_posts is None:
         reddit_posts = reddit_posts_for_watch()
     prompt += reddit.build_reddit_prompt_section(reddit_posts)
+    return prompt
+
+
+COPILOT_WATCH_DAYS = 7
+
+COPILOT_WATCH_PROMPT = """Tu produis une veille hebdomadaire dédiée à l’écosystème Microsoft Copilot, couvrant les nouveautés publiées dans les 7 derniers jours (la date du jour et la période exacte sont indiquées en tête de ce message). Elle complète la veille IA quotidienne, qui ne suit Microsoft que de loin.
+
+# Périmètre
+- **Microsoft 365 Copilot** : Copilot Chat, Copilot dans Word / Excel / PowerPoint / Outlook / Teams / Loop / OneNote, Copilot Notebooks, Copilot Search, Memory, agents intégrés (Researcher, Analyst…), licences et tarifs.
+- **Copilot Studio** : création d’agents, connecteurs, MCP, actions, computer use, modèles disponibles, gouvernance et facturation (messages, crédits).
+- **Work IQ** : couche d’intelligence qui ancre Copilot et les agents dans les données de travail (mails, réunions, fichiers, Teams, personnes), serveur MCP Work IQ, administration dans le centre d’administration Microsoft 365.
+- **Copilot Cowork** : agent qui planifie et exécute des tâches de bout en bout dans Microsoft 365, plugins et skills, intégrations (Planner, Purview…).
+- Administration et sécurité liées à Copilot : centre d’administration M365, Purview (DLP, étiquettes de sensibilité, audit), Entra, contrôle des agents, résidence des données.
+Hors périmètre : GitHub Copilot, Copilot grand public (Windows, Edge, application Copilot personnelle), Dynamics 365 et Power Platform, sauf impact direct sur Microsoft 365 Copilot.
+
+# Méthode de recherche (obligatoire)
+Utilise l’outil de recherche web et interroge ces sources primaires une à une, en filtrant sur la période :
+1. **Microsoft 365 Roadmap**, filtre Copilot : https://www.microsoft.com/microsoft-365/roadmap?filters=Microsoft%20Copilot%20(Microsoft%20365) (une liste extraite automatiquement de son API peut être fournie en fin de message).
+2. **What’s new in Microsoft 365 Copilot** (notes de version, Learn) : https://learn.microsoft.com/microsoft-365/copilot/release-notes
+3. **What’s new in Copilot Studio** (Learn) : https://learn.microsoft.com/microsoft-copilot-studio/whats-new
+4. **Microsoft 365 Blog** : https://www.microsoft.com/microsoft-365/blog/
+5. **Tech Community, blog Microsoft Copilot** : https://techcommunity.microsoft.com/category/microsoft-copilot/blog/microsoft-copilot-blog (dont le billet mensuel « What’s new in Microsoft 365 Copilot »).
+6. **Documentation Work IQ** : https://learn.microsoft.com/microsoft-iq/ et https://learn.microsoft.com/microsoft-copilot-studio/agents-experience/add-work-iq
+7. **Documentation Copilot Cowork** : https://learn.microsoft.com/microsoft-365/copilot/cowork/
+- Pour chaque item, ouvre la source primaire et vérifie la date de publication ou de mise à jour. Ne retiens que ce qui est paru ou a changé de statut dans la période.
+- Les sites tiers (miroirs du centre de messages, blogs MVP, médias) servent seulement de pistes : retrouve la source Microsoft, sinon écarte l’item ou signale-le dans la Note de méthode.
+- Couvre Microsoft 365 Copilot, Copilot Studio, Work IQ et Copilot Cowork quand il y a de l’actualité ; ne force pas un produit sans nouveauté.
+- Semaine calme : dis-le dans le TL;DR et produis un rapport court.
+
+# Questions à traiter pour chaque item
+- Identifiant Roadmap s’il existe (ex. « Roadmap 570672 »).
+- Statut : In development / Rolling out / Launched (ou Preview / GA selon la source).
+- Licence requise : Microsoft 365 Copilot, Copilot Chat (inclus), Copilot Studio (messages / crédits), add-on, programme Frontier…
+- Disponibilité en Europe : région UE / EU Data Boundary, tenant français, langue française ; « non précisé » si la source ne dit rien.
+- Impact pour l’administration Microsoft 365 : nouveaux contrôles, activation par défaut ou non, gouvernance des données (Purview, étiquettes, DLP, audit, rétention), gestion des agents.
+
+# Consignes anti-bruit (strictes)
+- Sources Microsoft officielles uniquement comme preuve ; une source officielle datée par item.
+- Sépare l’annoncé (In development, preview) du disponible (Rolling out, Launched, GA).
+- Écarte le marketing sans fonctionnalité concrète.
+- Mieux vaut 4 items solides que 12 dilués.
+
+# Ancrage April (quand c’est pertinent)
+Relie l’item à notre contexte M365 (déploiement de Copilot, gouvernance des données, Teams, SharePoint, Purview) ou à un cas d’usage assurance. Ne force pas ce lien.
+
+# Format de sortie obligatoire
+N’utilise que ce sous-ensemble markdown : titres `## ` et `### `, puces `- `, tableaux `|`. Pas de listes imbriquées, pas de `####`, pas de blocs de code.
+
+## TL;DR
+- 3 puces maximum : l’essentiel de la semaine côté Copilot, formulé pour décider vite.
+
+## Radar décisionnel
+
+### À tester maintenant
+- ce qui est disponible sur notre tenant et mérite un essai (1 ligne par item)
+
+### À surveiller
+- annoncé ou en déploiement, potentiellement structurant
+
+### À ignorer
+- bruit / marketing, écarté en une ligne avec la raison
+
+## Nouveautés détaillées
+Trie les items par impact réel. Un `### ` par nouveauté, puis des puces plates :
+
+### <Titre court de la nouveauté>
+- **Ce qui sort** : …
+- **Produit** : Microsoft 365 Copilot / Copilot Studio / Work IQ / Copilot Cowork / administration
+- **Pourquoi c’est important** : …
+- **Pour qui** : utilisateurs / makers / administrateurs M365 / sécurité
+- **Identifiant Roadmap** : … (omets la puce s’il n’y en a pas)
+- **Statut** : In development / Rolling out / Launched
+- **Maturité** : prototype / alpha / bêta / GA / production-ready
+- **Licence requise** : …
+- **Disponibilité UE / tenant FR** : …
+- **Impact admin M365** : contrôles, activation, gouvernance des données
+- **Ancrage April** : … (omets la puce si non pertinent)
+- **Action recommandée** : …
+- **Source** : [titre de la source](url) — publié le AAAA-MM-JJ
+
+## Sécurité & gouvernance
+Section toujours présente. Une puce par sujet : nouveaux contrôles d’administration, Purview / DLP / étiquettes, audit, résidence des données, contrôle des agents, incidents ou vulnérabilités touchant Copilot. Pour chaque puce : le fait, qui est concerné, l’action recommandée et la source en lien.
+- Si rien de notable dans la période : « - Rien de notable dans la période. »
+
+## Signaux faibles & recherche
+- éléments Roadmap annoncés à moyen terme, reports ou annulations, sujets à recontrôler la semaine prochaine (avec lien)
+
+## Note de méthode
+- Fenêtre couverte (dates).
+- Sources consultées, et éléments issus de sources non officielles : liste-les.
+- Rappel : In development / preview ≠ disponible sur le tenant ; le déploiement Microsoft est progressif.
+"""
+
+
+def build_copilot_prompt(
+    db: Session, now: Optional[datetime] = None, roadmap_items: Optional[list[dict]] = None
+) -> str:
+    """Prompt de la veille Microsoft Copilot : fenêtre de 7 jours, « Déjà couvert » des veilles Copilot,
+    éléments récents de la Microsoft 365 Roadmap (API publique) quand elle répond."""
+    if now is None:
+        now = now_paris()
+    prompt = build_period_header(now, COPILOT_WATCH_DAYS) + COPILOT_WATCH_PROMPT
+    prompt += build_already_covered_section(db, "copilot_watch")
+    if roadmap_items is None:
+        start = now - timedelta(days=COPILOT_WATCH_DAYS)
+        roadmap_items = m365_roadmap.collect_copilot_roadmap(start, now)
+        print(f"Roadmap : {len(roadmap_items)} éléments Copilot ajoutés au prompt")
+    prompt += m365_roadmap.build_roadmap_prompt_section(roadmap_items)
     return prompt
 
 
@@ -1035,10 +1169,10 @@ def build_pdf_styles():
     return styles
 
 
-def build_pdf_header(report_date: str, styles):
+def build_pdf_header(report_date: str, styles, title: str = "AI Technical Watch"):
     header_table = Table(
         [
-            [Paragraph("AI Technical Watch", styles["WatchTitle"])],
+            [Paragraph(pdf_text(title), styles["WatchTitle"])],
             [Paragraph(report_date, styles["WatchMeta"])],
         ],
         colWidths=[170 * mm],
@@ -1185,9 +1319,10 @@ def build_pdf_story(
     report_date: str,
     summary: Optional[models.ReportSummary] = None,
     notes: Optional[List[models.Note]] = None,
+    title: str = "AI Technical Watch",
 ):
     styles = build_pdf_styles()
-    elements = [build_pdf_header(report_date, styles), Spacer(1, 12)]
+    elements = [build_pdf_header(report_date, styles, title), Spacer(1, 12)]
 
     if summary and summary.content and summary.content.strip():
         elements.append(Paragraph("Résumé exécutif", styles["WatchH2"]))
@@ -1450,7 +1585,7 @@ def extract_news_items(content: str) -> list[dict]:
 
 def sync_news_items(db: Session, report: models.Report) -> None:
     """Enregistre les nouveautés d'un rapport de veille si ce n'est pas déjà fait."""
-    if report.report_type != "technical_watch":
+    if report.report_type not in WATCH_REPORT_TYPES:
         return
     exists = db.query(models.NewsItem).filter(models.NewsItem.report_id == report.id).first()
     if exists is not None:
@@ -1475,7 +1610,7 @@ def backfill_news_items() -> None:
         known_ids = {row[0] for row in db.query(models.NewsItem.report_id).distinct()}
         reports = (
             db.query(models.Report)
-            .filter(models.Report.report_type == "technical_watch")
+            .filter(models.Report.report_type.in_(WATCH_REPORT_TYPES))
             .all()
         )
         for report in reports:
@@ -1886,24 +2021,32 @@ def today_paris() -> str:
         return datetime.now().strftime("%Y-%m-%d")
 
 
-def generate_watch_report(db: Session) -> models.Report:
-    """Génère, enregistre et indexe un rapport de veille quotidienne. Appelant : détenir le verrou."""
+def generate_watch_report(
+    db: Session,
+    report_type: str = "technical_watch",
+    prompt_builder=None,
+) -> models.Report:
+    """Génère, enregistre et indexe un rapport de veille (quotidienne par défaut, ou copilot_watch avec
+    build_copilot_prompt). Appelant : détenir WATCH_GENERATION_LOCK."""
+    if report_type not in WATCH_REPORT_TYPES:
+        raise ValueError(f"Type de veille inconnu : {report_type}")
+    prompt_builder = prompt_builder or build_technical_prompt
     ensure_llm_ready()
     if not llm_supports_web_search():
         print(
             "ATTENTION : le fournisseur LLM actif n'a pas accès à internet ; "
-            "la veille reposera sur ses connaissances, sans actualité des dernières 24h."
+            "la veille reposera sur ses connaissances, sans actualité récente."
         )
-    print(f"Sending report request to {describe_llm_backend()} timeout={LLM_REPORT_TIMEOUT_SECONDS}s")
+    print(f"Sending {report_type} request to {describe_llm_backend()} timeout={LLM_REPORT_TIMEOUT_SECONDS}s")
     start = time.perf_counter()
     content = generate_llm_content(
-        build_technical_prompt(db),
+        prompt_builder(db),
         timeout_seconds=LLM_REPORT_TIMEOUT_SECONDS,
         web_search=True,
     )
     print(f"LLM response received in {time.perf_counter() - start:.2f}s")
 
-    db_report = models.Report(date=today_paris(), report_type="technical_watch", content=content)
+    db_report = models.Report(date=today_paris(), report_type=report_type, content=content)
     db.add(db_report)
     db.commit()
     db.refresh(db_report)
@@ -1926,17 +2069,44 @@ def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token)):
         WATCH_GENERATION_LOCK.release()
 
 
+@app.post("/reports/copilot/trigger", response_model=schemas.Report)
+def trigger_copilot_report(db: Session = Depends(get_db), _=Depends(verify_token)):
+    """Veille Microsoft Copilot (7 derniers jours) à la demande. Même verrou que la veille quotidienne."""
+    if not WATCH_GENERATION_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Une génération de veille est déjà en cours.")
+    try:
+        return generate_watch_report(db, report_type="copilot_watch", prompt_builder=build_copilot_prompt)
+    except Exception as e:
+        print(f"Error triggering Copilot report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        WATCH_GENERATION_LOCK.release()
+
+
 # Un envoi de newsletter à la fois : évite un double envoi si le cron et le bouton se croisent.
 MAIL_SEND_LOCK = threading.Lock()
 
 
 def newsletter_subject(report: models.Report) -> str:
+    if report.report_type == "copilot_watch":
+        return f"Veille Microsoft Copilot – {report.date}"
     return f"Veille IA – {report.date}"
+
+
+def render_report_newsletter(report: models.Report) -> str:
+    if report.report_type == "copilot_watch":
+        return render_newsletter(
+            report.content or "",
+            report.date,
+            kicker="Veille Microsoft Copilot · STTI APRIL",
+            title="La veille Microsoft Copilot",
+        )
+    return render_newsletter(report.content or "", report.date)
 
 
 def build_newsletter_email_html(report: models.Report) -> str:
     """Newsletter dans un document HTML complet (l'endpoint /newsletter renvoie le corps seul)."""
-    body = render_newsletter(report.content or "", report.date)
+    body = render_report_newsletter(report)
     return (
         '<!doctype html><html lang="fr"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -2017,13 +2187,40 @@ def run_daily_watch(force: bool = False, db: Session = Depends(get_db), _=Depend
     return daily_run_response(db, report, created=True)
 
 
+@app.post("/cron/copilot-weekly", response_model=schemas.DailyRunResponse)
+def run_copilot_weekly(force: bool = False, db: Session = Depends(get_db), _=Depends(verify_token)):
+    """Route pour le cron hebdomadaire : génère une veille Microsoft Copilot si aucune n'existe sur les
+    7 derniers jours (force=true pour en refaire une). Même envoi automatique que /cron/daily."""
+    if not force:
+        since = (datetime.strptime(today_paris(), "%Y-%m-%d") - timedelta(days=COPILOT_WATCH_DAYS - 1)).strftime("%Y-%m-%d")
+        existing = (
+            db.query(models.Report)
+            .filter(models.Report.report_type == "copilot_watch", models.Report.date >= since)
+            .order_by(models.Report.created_at.desc())
+            .first()
+        )
+        if existing is not None:
+            return daily_run_response(db, existing, created=False)
+
+    if not WATCH_GENERATION_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Une génération de veille est déjà en cours.")
+    try:
+        report = generate_watch_report(db, report_type="copilot_watch", prompt_builder=build_copilot_prompt)
+    except Exception as e:
+        print(f"Error in Copilot weekly cron run: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        WATCH_GENERATION_LOCK.release()
+    return daily_run_response(db, report, created=True)
+
+
 @app.get("/reports/{report_id}/newsletter", response_class=HTMLResponse)
 def get_report_newsletter(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
     """Corps d'email HTML (commence par <table>) prêt à coller dans un client mail."""
     report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if report is None:
         raise HTTPException(status_code=404, detail="Report not found")
-    return HTMLResponse(render_newsletter(report.content or "", report.date))
+    return HTMLResponse(render_report_newsletter(report))
 
 
 @app.get("/mail/info", response_model=schemas.MailInfo)
@@ -2113,6 +2310,7 @@ def get_report_pdf(report_id: int, db: Session = Depends(get_db), _=Depends(veri
         .all()
     )
     
+    pdf_title = "Veille Microsoft Copilot" if db_report.report_type == "copilot_watch" else "AI Technical Watch"
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -2121,9 +2319,9 @@ def get_report_pdf(report_id: int, db: Session = Depends(get_db), _=Depends(veri
         rightMargin=18 * mm,
         topMargin=18 * mm,
         bottomMargin=18 * mm,
-        title=f"AI Technical Watch - {db_report.date}",
+        title=f"{pdf_title} - {db_report.date}",
     )
-    elements = build_pdf_story(db_report.content, db_report.date, summary=db_summary, notes=db_notes)
+    elements = build_pdf_story(db_report.content, db_report.date, summary=db_summary, notes=db_notes, title=pdf_title)
     doc.build(elements)
     
     return Response(

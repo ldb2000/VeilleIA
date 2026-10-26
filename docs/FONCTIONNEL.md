@@ -17,13 +17,15 @@ Point d'entrée de l'application.
 - **Radar de la semaine** : jusqu'à 6 éléments « À tester » / « À surveiller » des veilles des 7 derniers jours ; un clic ouvre le rapport concerné.
 - **Projets suivis** : outils repérés dans les rapports (Cursor, Claude Code, MCP, Ollama, vLLM…). Un clic produit une synthèse en quatre points (Nouveauté, Intérêt pour APRIL, Risque ou limite, Action recommandée) à partir des rapports qui mentionnent le projet. La synthèse est gardée 24 h dans le navigateur et n'apparaît pas dans l'historique des recherches.
 
+La barre supérieure porte aussi deux boutons de génération : « Veille Microsoft Copilot » (veille hebdomadaire dédiée, voir plus bas) et « Lancer la veille » (veille quotidienne). Une seule génération à la fois.
+
 ### Rapports
 
 Lecture d'un rapport.
 
 - **Historique** (colonne de gauche, repliable) avec filtre texte ; menu d'actions par rapport (exports, suppression).
 - **En-tête** : type (Analyse technique ou Note CODIR), date, badges (nouveautés, sources, news sauvegardées, résumé) et actions :
-  - veille : « Générer la note CODIR », « Résumé exécutif », « Exporter en PDF », « Newsletter », « Envoyer par mail », « Partager dans Teams » ;
+  - veille (quotidienne ou Microsoft Copilot) : « Générer la note CODIR », « Résumé exécutif », « Exporter en PDF », « Newsletter », « Envoyer par mail », « Partager dans Teams » ;
   - note CODIR : « Exporter en Word », « Exporter en PDF », « Partager dans Teams ».
 - **Résumé exécutif** repliable, s'il a été généré.
 - **Lecture structurée** quand le rapport suit le format de veille : carte TL;DR, grille du radar (tester / surveiller / ignorer), une carte par nouveauté avec ses champs, badge de maturité, encadré « Action recommandée » et bouton **Sauvegarder**. Les autres sections et les rapports anciens s'affichent en markdown.
@@ -42,7 +44,7 @@ Liste de toutes les notes (notes, détails, définitions) avec le rapport d'orig
 
 Conversation avec l'assistant sur les rapports.
 
-- **Rapports consultés** : pastilles retirables, « + Ajouter » pour en choisir d'autres (3 au maximum). Par défaut, les 3 dernières veilles.
+- **Rapports consultés** : pastilles retirables, « + Ajouter » pour en choisir d'autres (3 au maximum). Par défaut, la dernière veille Microsoft Copilot (s'il y en a une) et les dernières veilles quotidiennes, 3 au total.
 - **Conversation** : réponses en markdown avec citations « (Rapport 12 · Nouveautés détaillées) », sources cliquables, boutons « Enregistrer en note » et « Copier ».
 - **Nouvelle conversation** : les questions suivantes ne tiennent plus compte des échanges précédents (un séparateur est ajouté).
 - **Chercher aussi sur le web** : la réponse est complétée par une recherche internet, séparée en « D'après les rapports » / « Sur le web », avec liens. Grisé si le fournisseur LLM n'a pas accès au web.
@@ -54,6 +56,7 @@ Conversation avec l'assistant sur les rapports.
 | Je veux… | Comment | Ce qui se passe |
 | --- | --- | --- |
 | **Lancer la veille** | « Lancer la veille » (tableau de bord), ou le cron `POST /cron/daily` | Le LLM cherche sur le web les nouveautés des dernières 24 h, vérifie les sources et rédige le rapport (plusieurs minutes, jusqu'à 10). Avec `REDDIT_ENABLED=true`, il reçoit aussi les discussions Reddit les plus votées des subreddits suivis, comme pistes à vérifier. Les nouveautés sont extraites et deviennent sauvegardables. Une seule génération à la fois. |
+| **Suivre Microsoft Copilot** | « Veille Microsoft Copilot » (barre supérieure), ou le cron `POST /cron/copilot-weekly` | Le LLM interroge les sources officielles Microsoft (Roadmap, notes de version, blogs, documentation Work IQ et Cowork) sur les 7 derniers jours, aidé par la liste des éléments Roadmap récents que l'application lit elle-même. Rapport « Veille Microsoft Copilot » au même format que la veille quotidienne, avec identifiant Roadmap, statut, licence, disponibilité UE et impact admin par nouveauté. Les nouveautés déjà couvertes ne reviennent pas la semaine suivante. Le tableau de bord reste centré sur la veille quotidienne. |
 | **Obtenir un résumé** | « Résumé exécutif » dans un rapport | 5 points maximum tirés du rapport, terminés par « Décision suggérée ». Enregistré et réaffiché ensuite ; peut être régénéré. |
 | **Approfondir un extrait** | Sélectionner un passage → « Approfondir » | Explication de 6 lignes maximum, à partir du rapport seulement ; enregistrée comme note « Détail ». |
 | **Définir un terme** | Sélectionner un terme → « Définir » | Définition courte et vulgarisée ; enregistrée comme note « Définition ». |
@@ -106,6 +109,8 @@ Le prompt `TECHNICAL_PROMPT` impose cette structure ; l'interface, l'extraction 
 Règles de contenu : sources officielles en priorité, uniquement ce qui est paru dans la période (un sujet déjà couvert ne revient qu'avec un fait nouveau, titre préfixé « Mise à jour : »), maturité toujours indiquée, rapport court les jours calmes. Le périmètre couvre les labs (OpenAI, Anthropic, Google, Meta, Mistral, Microsoft, AWS, xAI, Cohere, NVIDIA, DeepSeek, Qwen…), les outils de code et agents, l'écosystème (MCP, Ollama, OpenRouter, orchestration, sécurité des agents) et la recherche à impact pratique.
 
 **Anciens rapports.** Les rapports générés avant la refonte « décision d'abord » suivent l'ancien format (`## 1. Nouveautés majeures`, `## 2. Détail par catégorie`, `## 3. Tableau de synthèse`…). Ils restent lisibles : l'interface les affiche en markdown simple, sans cartes de nouveautés ni sauvegarde.
+
+**Veille Microsoft Copilot.** Mêmes sections que ci-dessus, sur 7 jours. Chaque nouveauté ajoute : **Produit** (Microsoft 365 Copilot, Copilot Studio, Work IQ, Copilot Cowork, administration), **Identifiant Roadmap**, **Statut** (In development / Rolling out / Launched), **Licence requise**, **Disponibilité UE / tenant FR**, **Impact admin M365**. Sources interrogées : voir [ARCHITECTURE.md](ARCHITECTURE.md#veille-microsoft-copilot).
 
 **Note CODIR.** Format différent, produit par `CODIR_NOTE_PROMPT` : en-tête, synthèse (4 lignes), tableau « Décisions proposées » (3 lignes maximum), 3 points de vigilance, pied de page.
 

@@ -1987,3 +1987,16 @@ button {
     padding: 1.1rem;
   }
 }
+
+.topbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.report-type-badge {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.68rem;
+  vertical-align: middle;
+}

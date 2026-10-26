@@ -68,6 +68,14 @@ Pas d'identifiants : Reddit n'accorde pas d'application et refuse son API JSON s
 - pas de flair ni d'indicateurs épinglé / NSFW : les mèmes sont écartés par heuristique (mot-clé dans le titre, ou image / vidéo au titre de moins de 5 mots) ;
 - 100 posts au plus pour l'ensemble des subreddits : les petits subreddits (ChatGPTCoding, MachineLearning) peuvent être absents un jour où les gros sont très actifs.
 
+## Veille Microsoft Copilot (Microsoft 365 Roadmap)
+
+| Variable | Défaut | Effet |
+| --- | --- | --- |
+| `COPILOT_ROADMAP_ENABLED` | `true` | Lit l'API JSON publique du Microsoft 365 Roadmap et ajoute au prompt de la veille Microsoft Copilot les éléments Copilot créés ou modifiés pendant les 7 jours. `false` : le LLM s'appuie seulement sur sa recherche web. |
+| `COPILOT_ROADMAP_MAX_ITEMS` | `40` | Nombre maximal d'éléments Roadmap ajoutés au prompt (nouveaux d'abord). |
+| `COPILOT_ROADMAP_TIMEOUT_SECONDS` | `30` | Délai de téléchargement de la Roadmap (≈ 3 Mo). |
+
 ## Mail (SMTP)
 
 Envoi de la newsletter par mail (`POST /reports/{id}/send`, bouton « Envoyer par mail », envoi automatique du cron). Sans ces variables, l'application fonctionne normalement : le bouton est grisé et l'envoi renvoie 503. Toutes sont lues à chaque appel.
