@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -11,6 +12,7 @@ import {
   Copy,
   Globe,
   Mail,
+  Send,
   Download,
   FileText,
   MessageSquareShare,
@@ -35,6 +37,8 @@ import {
   generateCodirNote,
   getChatMessages,
   getLlmInfo,
+  getMailInfo,
+  sendReportNewsletter,
   getReportNewsletter,
   getNews,
   getReportDefinition,
@@ -46,7 +50,7 @@ import {
   setNewsSaved,
   triggerReport,
 } from './api';
-import type { ChatMessage, LlmInfo, NewsItem, Note, Report } from './api';
+import type { ChatMessage, LlmInfo, MailInfo, NewsItem, Note, Report } from './api';
 import './App.css';
 
 type ContextMenuState = {
@@ -339,6 +343,8 @@ function App() {
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
   const [savedAnswerIds, setSavedAnswerIds] = useState<Set<number>>(new Set());
   const [llmInfo, setLlmInfo] = useState<LlmInfo | null>(null);
+  const [mailInfo, setMailInfo] = useState<MailInfo | null>(null);
+  const [sendingNewsletterId, setSendingNewsletterId] = useState<number | null>(null);
   const [chatWebSearch, setChatWebSearch] = useState(false);
   const [conversationStartId, setConversationStartId] = useState<number>(() => readConversationStart());
   const [projectSynthesis, setProjectSynthesis] = useState<ProjectSynthesisCacheEntry | null>(null);
@@ -357,6 +363,9 @@ function App() {
     getLlmInfo()
       .then(setLlmInfo)
       .catch((error) => console.error('Erreur lors du chargement du fournisseur LLM :', error));
+    getMailInfo()
+      .then(setMailInfo)
+      .catch((error) => console.error('Erreur lors du chargement de la configuration mail :', error));
   }, []);
 
   useEffect(() => {
@@ -505,6 +514,55 @@ function App() {
       target?.close();
       console.error('Erreur lors de la génération de la newsletter :', error);
       alert('Impossible de générer la newsletter.');
+    }
+  };
+
+  // Les dates du backend sont en UTC sans fuseau : on l'ajoute pour un affichage à l'heure locale.
+  const formatUtcTimestamp = (value: string) =>
+    new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`).toLocaleString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+  const mailButtonTitle = (report: Report) => {
+    if (!mailInfo) return 'Configuration mail en cours de chargement';
+    if (!mailInfo.configured) {
+      return `Envoi par mail non configuré (à définir dans backend/.env : ${mailInfo.missing.join(', ')})`;
+    }
+    const target = `${mailInfo.recipients_count} destinataire${mailInfo.recipients_count > 1 ? 's' : ''}`;
+    return report.newsletter_sent_at
+      ? `Déjà envoyée le ${formatUtcTimestamp(report.newsletter_sent_at)} — renvoyer à ${target}`
+      : `Envoyer la newsletter à ${target}`;
+  };
+
+  const handleSendNewsletter = async (report: Report) => {
+    if (!mailInfo?.configured) return;
+    const count = mailInfo.recipients_count;
+    const target = `${count} destinataire${count > 1 ? 's' : ''}`;
+    const question = report.newsletter_sent_at
+      ? `La newsletter du ${report.date} a déjà été envoyée le ${formatUtcTimestamp(report.newsletter_sent_at)}.\nLa renvoyer à ${target} ?`
+      : `Envoyer la newsletter du ${report.date} à ${target} ?`;
+    if (!window.confirm(question)) return;
+
+    setSendingNewsletterId(report.id);
+    try {
+      const result = await sendReportNewsletter(report.id);
+      const update = (item: Report) =>
+        item.id === report.id ? { ...item, newsletter_sent_at: result.newsletter_sent_at } : item;
+      setReports((current) => current.map(update));
+      setSelectedReport((current) => (current ? update(current) : current));
+      alert(
+        `Newsletter envoyée à ${result.recipients_count} destinataire${result.recipients_count > 1 ? 's' : ''} (« ${result.subject} »).`,
+      );
+    } catch (error) {
+      console.error('Erreur lors de l’envoi de la newsletter :', error);
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
+      alert(`Impossible d’envoyer la newsletter.${typeof detail === 'string' ? `\n${detail}` : ''}`);
+    } finally {
+      setSendingNewsletterId(null);
     }
   };
 
@@ -1281,6 +1339,22 @@ function App() {
                     <button type="button" className="btn btn-ghost" onClick={() => handleOpenNewsletter(selectedReport)}>
                       <Mail size={16} />
                       Newsletter
+                    </button>
+                  )}
+                  {selectedReport.report_type === 'technical_watch' && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => handleSendNewsletter(selectedReport)}
+                      disabled={!mailInfo?.configured || sendingNewsletterId === selectedReport.id}
+                      title={mailButtonTitle(selectedReport)}
+                    >
+                      <Send size={16} />
+                      {sendingNewsletterId === selectedReport.id
+                        ? 'Envoi…'
+                        : selectedReport.newsletter_sent_at
+                          ? 'Renvoyer par mail'
+                          : 'Envoyer par mail'}
                     </button>
                   )}
                   <button type="button" className="btn btn-ghost" onClick={() => handleShareTeams(selectedReport)}>

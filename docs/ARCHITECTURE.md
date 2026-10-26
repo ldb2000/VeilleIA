@@ -36,8 +36,9 @@
 
 | Fichier | Rôle |
 | --- | --- |
-| `main.py` | Application FastAPI : CORS, authentification (`verify_token`), migrations légères, couche LLM (Codex, OpenRouter, Gemini), prompts (`TECHNICAL_PROMPT`, `CODIR_NOTE_PROMPT`, prompts inline de résumé / détail / définition / chat), extraction des news, rendu PDF (ReportLab) et DOCX (python-docx), les 23 endpoints. |
+| `main.py` | Application FastAPI : CORS, authentification (`verify_token`), migrations légères, couche LLM (Codex, OpenRouter, Gemini), prompts (`TECHNICAL_PROMPT`, `CODIR_NOTE_PROMPT`, prompts inline de résumé / détail / définition / chat), extraction des news, rendu PDF (ReportLab) et DOCX (python-docx), les 25 endpoints. |
 | `newsletter.py` | Rendu déterministe d'un rapport en corps d'email HTML compatible Gmail / Outlook (`render_newsletter`). Aucun appel LLM. |
+| `mailer.py` | Envoi d'emails par SMTP (`send_html_email`, smtplib + `email.message`, multipart/alternative texte + HTML). Configuration lue dans l'environnement à chaque appel (`load_mail_config`) ; `describe_mail_config` ne renvoie jamais le mot de passe. |
 | `reddit.py` | Signaux communautaires Reddit (optionnels, `REDDIT_ENABLED`) : lecture du top des subreddits par le flux RSS public, en une requête (`fetch_subreddit_posts`), filtrage (`filter_posts`), section ajoutée au prompt de veille (`build_reddit_prompt_section`). Ne lève jamais d'exception. |
 | `models.py` | Modèles SQLAlchemy : `Report`, `ReportSummary`, `Note`, `ChatMessage`, `NewsItem`. |
 | `schemas.py` | Schémas Pydantic des entrées / sorties d'API. |
@@ -84,6 +85,7 @@ reports n ─── n    chat_messages      (report_ids : liste JSON sérialisé
 | `report_type` | String | `technical_watch` (veille quotidienne, défaut) ou `codir_note` (note CODIR). |
 | `content` | Text | Markdown produit par le LLM. |
 | `created_at` | DateTime (UTC) | Horodatage de création ; sert au tri. |
+| `newsletter_sent_at` | DateTime (UTC), nullable | Dernier envoi réussi de la newsletter par mail (`POST /reports/{id}/send` ou cron). Ajoutée par `ensure_reports_schema()`. |
 
 ### `report_summaries`
 
@@ -221,7 +223,24 @@ Prompts inline dans leurs endpoints, appliqués au rapport complet, sans recherc
 2. TL;DR → bloc « Executive summary » ; Radar → trois blocs colorés ; Nouveautés détaillées → une carte par nouveauté, avec l'acteur détecté (`detect_actor`) et sa couleur ; Sécurité & gouvernance → encadré rouge ; tableau de synthèse construit à partir des champs des nouveautés ; autres sections ; Note de méthode en grisé ;
 3. le HTML respecte les contraintes des clients mail : commence par `<table>`, uniquement des tables et styles inline, `bgcolor` doublé de `background-color`, barres latérales en cellules de 4 px, largeur 720 px, caractères non ASCII convertis en entités (`to_entities`).
 
-Rien n'est envoyé par email : la route renvoie le HTML, le bouton « Newsletter » l'ouvre dans un onglet.
+La route renvoie le HTML ; le bouton « Newsletter » l'ouvre dans un onglet.
+
+### Envoi par mail
+
+```text
+POST /reports/{id}/send ──┐
+POST /cron/daily ─────────┤ (si MAIL_AUTO_SEND=true et newsletter_sent_at vide)
+                          ▼
+send_report_newsletter(db, report)        MAIL_SEND_LOCK : un envoi à la fois
+  ├─ build_newsletter_email_html()        render_newsletter() dans un document HTML complet
+  ├─ mailer.send_html_email(« Veille IA – <date> », html, text = markdown du rapport)
+  │    SMTP (STARTTLS) ou SMTP_SSL (port 465) → login si SMTP_USER → send_message(MAIL_TO)
+  └─ reports.newsletter_sent_at = maintenant (UTC), seulement si l'envoi a réussi
+```
+
+- Configuration incomplète (`SMTP_HOST`, `MAIL_FROM`, `MAIL_TO`, ou `SMTP_PASSWORD` quand `SMTP_USER` est défini) : `MailNotConfigured` → 503. Échec SMTP (connexion, authentification, refus) : `MailSendError` → 502. L'application démarre normalement sans configuration mail.
+- Le mot de passe n'apparaît ni dans les réponses (`GET /mail/info` donne seulement l'état, l'expéditeur et le nombre de destinataires), ni dans les logs, ni dans les messages d'erreur.
+- Le cron n'envoie qu'une fois par rapport : `newsletter_sent_at` est relu sous verrou avant l'envoi. Un échec n'empêche pas la réponse du cron (`mail_error`), et l'envoi est retenté au prochain appel. Le bouton « Envoyer par mail », lui, permet de renvoyer après confirmation.
 
 ## Authentification et CORS
 

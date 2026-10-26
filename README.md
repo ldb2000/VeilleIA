@@ -35,7 +35,25 @@ With `REDDIT_ENABLED=true`, the daily watch also reads the top posts of the last
 30 7 * * 1-5 curl -fsS -X POST --max-time 900 -H "Authorization: Bearer $API_TOKEN" http://localhost:8000/cron/daily >> ~/veille-cron.log 2>&1
 ```
 
-`GET /reports/{id}/newsletter` returns the email-ready HTML body (Gmail/Outlook safe). The « Newsletter » button in the report view opens it in a new tab. Nothing is emailed automatically.
+`GET /reports/{id}/newsletter` returns the email-ready HTML body (Gmail/Outlook safe). The « Newsletter » button in the report view opens it in a new tab.
+
+## Sending the newsletter by email
+
+Configure SMTP in `backend/.env` (template: `.env.example` at the repo root, which `dev.sh` / `compose.sh` copy to `backend/.env`):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SMTP_HOST` | — | SMTP server (required) |
+| `SMTP_PORT` | `587` | `465` switches to implicit SSL |
+| `SMTP_USER` / `SMTP_PASSWORD` | — | Credentials (empty user = unauthenticated relay); the password is never returned by the API nor logged |
+| `SMTP_STARTTLS` | `true` | STARTTLS before login |
+| `SMTP_SSL` | `true` if port 465 | Implicit SSL |
+| `SMTP_TIMEOUT_SECONDS` | `30` | SMTP timeout |
+| `MAIL_FROM` | `SMTP_USER` | Sender, e.g. `Veille IA <veille@april.fr>` |
+| `MAIL_TO` | — | Comma-separated recipients (required) |
+| `MAIL_AUTO_SEND` | `false` | `true`: `/cron/daily` emails the day's newsletter once |
+
+Then « Envoyer par mail » in the report view (or `POST /reports/{id}/send`) sends it with the subject « Veille IA – <date> ». `GET /mail/info` shows whether mail is configured. Without SMTP settings the app runs normally; sending returns 503. Details: [docs/CONFIGURATION.md](docs/CONFIGURATION.md#mail-smtp).
 
 ## Tech stack
 
