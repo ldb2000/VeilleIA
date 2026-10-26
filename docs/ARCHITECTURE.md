@@ -36,9 +36,10 @@
 
 | Fichier | Rôle |
 | --- | --- |
-| `main.py` | Application FastAPI : CORS, authentification (`verify_token`), migrations légères, couche LLM (Codex, OpenRouter, Gemini), prompts (`TECHNICAL_PROMPT`, `CODIR_NOTE_PROMPT`, prompts inline de résumé / détail / définition / chat), extraction des news, rendu PDF (ReportLab) et DOCX (python-docx), les 25 endpoints. |
+| `main.py` | Application FastAPI : CORS, authentification (`verify_token`), migrations légères, couche LLM (Codex, OpenRouter, Gemini), prompts (`TECHNICAL_PROMPT`, `COPILOT_WATCH_PROMPT`, `CODIR_NOTE_PROMPT`, prompts inline de résumé / détail / définition / chat), extraction des news, rendu PDF (ReportLab) et DOCX (python-docx), les 27 endpoints. |
 | `newsletter.py` | Rendu déterministe d'un rapport en corps d'email HTML compatible Gmail / Outlook (`render_newsletter`). Aucun appel LLM. |
 | `mailer.py` | Envoi d'emails par SMTP (`send_html_email`, smtplib + `email.message`, multipart/alternative texte + HTML). Configuration lue dans l'environnement à chaque appel (`load_mail_config`) ; `describe_mail_config` ne renvoie jamais le mot de passe. |
+| `m365_roadmap.py` | Lecture de l'API JSON publique du Microsoft 365 Roadmap pour la veille Microsoft Copilot (`collect_copilot_roadmap`, `filter_copilot_items`, `build_roadmap_prompt_section`). Ne lève jamais d'exception. |
 | `reddit.py` | Signaux communautaires Reddit (optionnels, `REDDIT_ENABLED`) : lecture du top des subreddits par le flux RSS public, en une requête (`fetch_subreddit_posts`), filtrage (`filter_posts`), section ajoutée au prompt de veille (`build_reddit_prompt_section`). Ne lève jamais d'exception. |
 | `models.py` | Modèles SQLAlchemy : `Report`, `ReportSummary`, `Note`, `ChatMessage`, `NewsItem`. |
 | `schemas.py` | Schémas Pydantic des entrées / sorties d'API. |
@@ -82,7 +83,7 @@ reports n ─── n    chat_messages      (report_ids : liste JSON sérialisé
 | --- | --- | --- |
 | `id` | Integer PK | Identifiant (SQLite peut réutiliser l'id du dernier rapport supprimé). |
 | `date` | String (AAAA-MM-JJ) | Date de la veille, au fuseau Europe/Paris pour les rapports générés. |
-| `report_type` | String | `technical_watch` (veille quotidienne, défaut) ou `codir_note` (note CODIR). |
+| `report_type` | String | `technical_watch` (veille quotidienne, défaut), `copilot_watch` (veille Microsoft Copilot, 7 jours) ou `codir_note` (note CODIR). Les deux premiers sont des « veilles » (`WATCH_REPORT_TYPES`) : même format, news extraites, vue structurée, newsletter. |
 | `content` | Text | Markdown produit par le LLM. |
 | `created_at` | DateTime (UTC) | Horodatage de création ; sert au tri. |
 | `newsletter_sent_at` | DateTime (UTC), nullable | Dernier envoi réussi de la newsletter par mail (`POST /reports/{id}/send` ou cron). Ajoutée par `ensure_reports_schema()`. |
@@ -101,7 +102,7 @@ Historique de l'onglet Recherches : `id`, `role` (`user` / `assistant`), `conten
 
 ### `news_items`
 
-Une ligne par nouveauté de la section « Nouveautés détaillées » d'une veille (`### titre` + puces).
+Une ligne par nouveauté de la section « Nouveautés détaillées » d'une veille quotidienne ou Microsoft Copilot (`### titre` + puces).
 
 | Colonne | Description |
 | --- | --- |
@@ -154,7 +155,7 @@ content = generate_llm_content(prompt,     # renvoie toujours une chaîne
 
 | Appel | `web_search` | Délai |
 | --- | --- | --- |
-| Génération de veille (`/reports/trigger`, `/cron/daily`) | `True` | `LLM_REPORT_TIMEOUT_SECONDS` (600 s) |
+| Génération de veille (`/reports/trigger`, `/cron/daily`, `/reports/copilot/trigger`, `/cron/copilot-weekly`) | `True` | `LLM_REPORT_TIMEOUT_SECONDS` (600 s) |
 | Note CODIR | `False` | `LLM_REPORT_TIMEOUT_SECONDS` |
 | Chat avec « Chercher aussi sur le web » coché | `True` | max(`LLM_TIMEOUT_SECONDS`, 300 s) |
 | Chat, résumé, détail, définition | `False` | `LLM_TIMEOUT_SECONDS` (90 s) |
@@ -195,6 +196,38 @@ Optionnels (`REDDIT_ENABLED=true`, désactivés par défaut ; variables dans [CO
 4. `build_technical_prompt()` ajoute la section « # Signaux communautaires Reddit » (titre, subreddit, rang, lien du thread, lien partagé, extrait) avec la consigne de les traiter comme des pistes à vérifier sur une source primaire. Le rapport ne gagne aucune section `##` : une discussion marquante non confirmée va au plus dans « Signaux faibles & recherche » et dans la « Note de méthode ».
 
 Reddit ne peut pas faire échouer la veille : toute erreur (HTTP, 403, 429, délai, XML invalide, subreddit inconnu) est journalisée (`Reddit : r/<subs> indisponible (…)`) et donne une liste vide ; le prompt est alors identique à celui sans Reddit. `GET /reddit/preview` montre les posts retenus, sans appel LLM.
+
+### Veille Microsoft Copilot
+
+Veille hebdomadaire dédiée à Microsoft 365 Copilot, Copilot Studio, Work IQ et Copilot Cowork (rapport `copilot_watch`), déclenchée par le bouton « Veille Microsoft Copilot » (`POST /reports/copilot/trigger`) ou par un cron hebdomadaire (`POST /cron/copilot-weekly`).
+
+```text
+generate_watch_report(db, report_type="copilot_watch", prompt_builder=build_copilot_prompt)
+  build_copilot_prompt(db)
+    « Date du jour … Période couverte : du J-7 HH:MM au J HH:MM (Paris) »
+    + COPILOT_WATCH_PROMPT  (périmètre, sources primaires à interroger une à une, questions par item, format)
+    + « Déjà couvert » : titres des news des 5 dernières veilles copilot_watch
+    + « Éléments du Microsoft 365 Roadmap créés ou modifiés pendant la période » (API publique, 40 max)
+  generate_llm_content(…, web_search=True) → INSERT reports (copilot_watch) → sync_news_items()
+```
+
+- Même verrou (`WATCH_GENERATION_LOCK`) que la veille quotidienne : une seule génération à la fois (409).
+- `/cron/copilot-weekly` ne génère rien si une `copilot_watch` existe sur les 7 derniers jours (date du rapport ≥ J-6), sauf `force=true` ; même envoi automatique par mail que `/cron/daily` (`MAIL_AUTO_SEND`).
+- `COPILOT_WATCH_PROMPT` garde exactement les sections `##` de `TECHNICAL_PROMPT` ; chaque nouveauté ajoute les puces **Produit**, **Identifiant Roadmap**, **Statut** (In development / Rolling out / Launched), **Licence requise**, **Disponibilité UE / tenant FR** et **Impact admin M365**.
+- `m365_roadmap.py` télécharge la Roadmap (≈ 2 200 éléments, 3 Mo, sans compte), garde les éléments du cloud mondial dont le produit est Microsoft Copilot (Microsoft 365), Copilot Studio ou Work IQ, ou dont le titre cite Cowork / Work IQ / Copilot Studio (sans les applications Dynamics 365 / Power Platform qui n'en parlent pas), créés ou modifiés dans la fenêtre ; nouveaux éléments d'abord. Erreur ou délai : liste vide, journalisée, et le LLM s'appuie sur sa recherche web.
+- Libellés par type : chat (« Veille Microsoft Copilot du … »), titre du PDF, en-tête de la newsletter (« La veille Microsoft Copilot ») et objet du mail (« Veille Microsoft Copilot – <date> »).
+
+Sources que le prompt fait interroger :
+
+| Source | Adresse | Rôle |
+| --- | --- | --- |
+| Microsoft 365 Roadmap (filtre Copilot) | https://www.microsoft.com/microsoft-365/roadmap?filters=Microsoft%20Copilot%20(Microsoft%20365) | Identifiant, statut, date prévue. Son **API JSON publique** (`https://www.microsoft.com/releasecommunications/api/v1/m365`, sans compte) est lue par l'application et injectée dans le prompt. |
+| What's new in Microsoft 365 Copilot | https://learn.microsoft.com/microsoft-365/copilot/release-notes | Notes de version. |
+| What's new in Copilot Studio | https://learn.microsoft.com/microsoft-copilot-studio/whats-new | Notes de version Copilot Studio. |
+| Microsoft 365 Blog | https://www.microsoft.com/microsoft-365/blog/ | Annonces. |
+| Tech Community, blog Microsoft Copilot | https://techcommunity.microsoft.com/category/microsoft-copilot/blog/microsoft-copilot-blog | Billet mensuel « What's new in Microsoft 365 Copilot ». |
+| Documentation Work IQ | https://learn.microsoft.com/microsoft-iq/ et https://learn.microsoft.com/microsoft-copilot-studio/agents-experience/add-work-iq | Work IQ, serveur MCP, administration. |
+| Documentation Copilot Cowork | https://learn.microsoft.com/microsoft-365/copilot/cowork/ | Cowork. |
 
 ### Chat sur les rapports (onglet Recherches)
 

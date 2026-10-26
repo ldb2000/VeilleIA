@@ -34,26 +34,28 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 | 3 | DELETE | `/reports/{report_id}` | — | 204 | 404 |
 | 4 | POST | `/reports/trigger` | — | `Report` (nouvelle `technical_watch`) | 409, 500 |
 | 5 | POST | `/cron/daily` | query `force` (bool, `false`) | `DailyRunResponse` | 409, 500 |
-| 6 | POST | `/reports/{report_id}/codir` | — | `Report` (nouvelle `codir_note`) | 404, 500 |
-| 7 | GET | `/reports/{report_id}/summary` | — | `ReportSummaryResponse` | 404 (pas encore de résumé) |
-| 8 | POST | `/reports/{report_id}/summary` | — | `ReportSummaryResponse` (généré ou régénéré) | 404, 500 |
-| 9 | POST | `/reports/{report_id}/detail` | query `selected_text` | `{"detail": str}` | 404, 422, 500 |
-| 10 | POST | `/reports/{report_id}/definition` | query `selected_text` | `{"definition": str}` | 404, 422, 500 |
-| 11 | GET | `/reports/{report_id}/news` | — | `NewsItem[]` du rapport (extraites si besoin) | 404 |
-| 12 | GET | `/news` | query `saved` (bool, optionnel), `report_id` (int, optionnel) | `NewsItem[]` | 401 |
-| 13 | PATCH | `/news/{news_id}` | `{"saved": bool}` | `NewsItem` | 404 |
-| 14 | GET | `/notes` | — | `Note[]`, plus récentes d'abord | 401 |
-| 15 | POST | `/reports/{report_id}/notes` | `{"kind": str, "source_text": str, "content": str}` | `Note` | 404, 422 |
-| 16 | DELETE | `/notes/{note_id}` | — | 204 | 404 |
-| 17 | GET | `/chat/messages` | — | `ChatMessage[]`, ordre chronologique | 401 |
-| 18 | POST | `/chat` | `ChatRequest` | `{"answer": str}` | 400, 404, 500 |
-| 19 | GET | `/llm/info` | — | `LLMInfo` | 401 |
-| 20 | GET | `/reports/{report_id}/pdf` | — | `application/pdf` (pièce jointe `ai_watch_<date>.pdf`) | 404 |
-| 21 | GET | `/reports/{report_id}/docx` | — | `.docx` (pièce jointe `note_codir_veille_ia_<date>.docx`) | 400 si pas une note CODIR, 404 |
-| 22 | GET | `/reports/{report_id}/newsletter` | — | `text/html` : corps d'email commençant par `<table>` | 404 |
-| 23 | GET | `/reddit/preview` | query `subreddit` (optionnel), `period` (`day`) | `RedditPreview` (aucun appel LLM) | 400 |
-| 24 | GET | `/mail/info` | — | `MailInfo` (sans mot de passe) | 401 |
-| 25 | POST | `/reports/{report_id}/send` | — | `SendNewsletterResult` | 404, 502, 503 |
+| 6 | POST | `/reports/copilot/trigger` | — | `Report` (nouvelle `copilot_watch`) | 409, 500 |
+| 7 | POST | `/cron/copilot-weekly` | query `force` (bool, `false`) | `DailyRunResponse` | 409, 500 |
+| 8 | POST | `/reports/{report_id}/codir` | — | `Report` (nouvelle `codir_note`) | 404, 500 |
+| 9 | GET | `/reports/{report_id}/summary` | — | `ReportSummaryResponse` | 404 (pas encore de résumé) |
+| 10 | POST | `/reports/{report_id}/summary` | — | `ReportSummaryResponse` (généré ou régénéré) | 404, 500 |
+| 11 | POST | `/reports/{report_id}/detail` | query `selected_text` | `{"detail": str}` | 404, 422, 500 |
+| 12 | POST | `/reports/{report_id}/definition` | query `selected_text` | `{"definition": str}` | 404, 422, 500 |
+| 13 | GET | `/reports/{report_id}/news` | — | `NewsItem[]` du rapport (extraites si besoin) | 404 |
+| 14 | GET | `/news` | query `saved` (bool, optionnel), `report_id` (int, optionnel) | `NewsItem[]` | 401 |
+| 15 | PATCH | `/news/{news_id}` | `{"saved": bool}` | `NewsItem` | 404 |
+| 16 | GET | `/notes` | — | `Note[]`, plus récentes d'abord | 401 |
+| 17 | POST | `/reports/{report_id}/notes` | `{"kind": str, "source_text": str, "content": str}` | `Note` | 404, 422 |
+| 18 | DELETE | `/notes/{note_id}` | — | 204 | 404 |
+| 19 | GET | `/chat/messages` | — | `ChatMessage[]`, ordre chronologique | 401 |
+| 20 | POST | `/chat` | `ChatRequest` | `{"answer": str}` | 400, 404, 500 |
+| 21 | GET | `/llm/info` | — | `LLMInfo` | 401 |
+| 22 | GET | `/reports/{report_id}/pdf` | — | `application/pdf` (pièce jointe `ai_watch_<date>.pdf`) | 404 |
+| 23 | GET | `/reports/{report_id}/docx` | — | `.docx` (pièce jointe `note_codir_veille_ia_<date>.docx`) | 400 si pas une note CODIR, 404 |
+| 24 | GET | `/reports/{report_id}/newsletter` | — | `text/html` : corps d'email commençant par `<table>` | 404 |
+| 25 | GET | `/reddit/preview` | query `subreddit` (optionnel), `period` (`day`) | `RedditPreview` (aucun appel LLM) | 400 |
+| 26 | GET | `/mail/info` | — | `MailInfo` (sans mot de passe) | 401 |
+| 27 | POST | `/reports/{report_id}/send` | — | `SendNewsletterResult` | 404, 502, 503 |
 
 ## Détail des endpoints
 
@@ -73,6 +75,10 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 {"report_id": 42, "date": "2026-10-25", "created": true, "newsletter_url": "/reports/42/newsletter",
  "mail_sent": true, "mail_error": null}
 ```
+
+**`POST /reports/copilot/trigger`** — génère maintenant une veille Microsoft Copilot (`copilot_watch`) sur les 7 derniers jours : Microsoft 365 Copilot, Copilot Studio, Work IQ, Copilot Cowork. Appel LLM avec recherche web, plus les éléments récents du Microsoft 365 Roadmap. Même verrou que la veille quotidienne (409).
+
+**`POST /cron/copilot-weekly`** — route pour un cron hebdomadaire. Si une `copilot_watch` existe déjà sur les 7 derniers jours et que `force` est faux, la renvoie (`created: false`). Sinon génère comme `/reports/copilot/trigger`. Réponse identique à `/cron/daily` (dont `newsletter_url` et l'envoi automatique `mail_sent` / `mail_error`).
 
 **`POST /reports/{report_id}/codir`** — génère une note CODIR à partir du rapport, de son résumé et de ses notes ; l'enregistre comme nouveau rapport `codir_note`.
 
@@ -191,6 +197,7 @@ curl -X POST --max-time 900 -H "Authorization: Bearer $TOKEN" "http://localhost:
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
      -d '{"question": "Que faut-il tester cette semaine ?"}' http://localhost:8000/chat
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/reports/42/newsletter > newsletter.html
+curl -X POST --max-time 900 -H "Authorization: Bearer $TOKEN" "http://localhost:8000/cron/copilot-weekly"
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/mail/info
 curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8000/reports/42/send
 curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/reddit/preview?subreddit=LocalLLaMA&period=day"

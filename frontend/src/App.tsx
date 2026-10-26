@@ -48,6 +48,7 @@ import {
   getReportSummary,
   getNotes,
   setNewsSaved,
+  triggerCopilotReport,
   triggerReport,
 } from './api';
 import type { ChatMessage, LlmInfo, MailInfo, NewsItem, Note, Report } from './api';
@@ -105,6 +106,9 @@ type NewsField = {
 
 const PROJECT_SYNTHESIS_CACHE_KEY = 'veilleia.projectSynthesis.v2';
 const CHAT_MAX_REPORTS = 3;
+// Veilles au format structuré (TL;DR, radar, nouveautés…) : quotidienne et Microsoft Copilot (hebdomadaire).
+const WATCH_REPORT_TYPES = ['technical_watch', 'copilot_watch'];
+const isWatchReport = (report: { report_type: string }) => WATCH_REPORT_TYPES.includes(report.report_type);
 const CHAT_SUGGESTIONS = [
   'Que faut-il tester cette semaine ?',
   'Alertes sécurité en cours',
@@ -323,6 +327,7 @@ function App() {
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [currentView, setCurrentView] = useState<MainView>('dashboard');
   const [loading, setLoading] = useState(false);
+  const [copilotLoading, setCopilotLoading] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [definitionLoading, setDefinitionLoading] = useState(false);
@@ -426,7 +431,7 @@ function App() {
   };
 
   const loadReportNews = async (report: Report) => {
-    if (report.report_type !== 'technical_watch') {
+    if (!isWatchReport(report)) {
       setReportNews([]);
       return;
     }
@@ -477,6 +482,26 @@ function App() {
       alert('Impossible de générer le rapport.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleTriggerCopilot = async () => {
+    setCopilotLoading(true);
+    try {
+      const newReport = await triggerCopilotReport();
+      setReports((current) => [newReport, ...current]);
+      setSelectedReport(newReport);
+      setCurrentView('reports');
+    } catch (error) {
+      console.error('Erreur lors de la veille Microsoft Copilot :', error);
+      const busy = axios.isAxiosError(error) && error.response?.status === 409;
+      alert(
+        busy
+          ? 'Une génération de veille est déjà en cours. Réessayez quand elle sera terminée.'
+          : 'Impossible de générer la veille Microsoft Copilot.',
+      );
+    } finally {
+      setCopilotLoading(false);
     }
   };
 
@@ -790,10 +815,15 @@ function App() {
     }
   };
 
-  // Rapports consultés par la recherche : choix explicite, sinon les 3 dernières analyses.
-  const defaultChatReportIds = reports
-    .filter((report) => report.report_type === 'technical_watch')
+  // Rapports consultés par la recherche : choix explicite, sinon la dernière veille Microsoft Copilot
+  // (s'il y en a une) et les dernières veilles quotidiennes, 3 au total.
+  const latestCopilotWatch = reports.find((report) => report.report_type === 'copilot_watch');
+  const defaultChatReportIds = [
+    ...(latestCopilotWatch ? [latestCopilotWatch] : []),
+    ...reports.filter((report) => report.report_type === 'technical_watch'),
+  ]
     .slice(0, CHAT_MAX_REPORTS)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .map((report) => report.id);
   const activeChatReportIds = (chatReportIds ?? defaultChatReportIds).filter((id) =>
     reports.some((report) => report.id === id),
@@ -961,8 +991,17 @@ function App() {
       day: 'numeric',
     });
 
-  const getReportTitle = (report: Report) =>
-    report.report_type === 'codir_note' ? 'Note CODIR' : 'Analyse technique';
+  const getReportTitle = (report: Report) => {
+    if (report.report_type === 'codir_note') return 'Note CODIR';
+    if (report.report_type === 'copilot_watch') return 'Veille Microsoft Copilot';
+    return 'Analyse technique';
+  };
+
+  const getReportHeading = (report: Report) => {
+    if (report.report_type === 'codir_note') return 'Note pour le CODIR';
+    if (report.report_type === 'copilot_watch') return 'Microsoft Copilot : la semaine';
+    return 'Veille IA du jour';
+  };
 
   const getNoteKindLabel = (kind: string) => {
     if (kind === 'detail') {
@@ -1228,7 +1267,12 @@ function App() {
                   >
                     <div className="report-item-content">
                       <div className="report-item-text">
-                        <span className="report-item-title">{getReportTitle(report)}</span>
+                        <span className="report-item-title">
+                          {getReportTitle(report)}
+                          {report.report_type === 'copilot_watch' && (
+                            <span className="badge badge-cyan report-type-badge">7 jours</span>
+                          )}
+                        </span>
                         <span className="report-item-meta">{formatReportTime(report.created_at)}</span>
                       </div>
                       <div className="report-item-actions">
@@ -1294,8 +1338,11 @@ function App() {
                 <div className="kicker">
                   {getReportTitle(selectedReport)} · {formatReportDay(selectedReport.created_at)}
                 </div>
-                <h1>{selectedReport.report_type === 'codir_note' ? 'Note pour le CODIR' : 'Veille IA du jour'}</h1>
+                <h1>{getReportHeading(selectedReport)}</h1>
                 <div className="badge-row">
+                  {selectedReport.report_type === 'copilot_watch' && (
+                    <span className="badge badge-cyan">Microsoft 365 Copilot · Copilot Studio · Work IQ · Cowork</span>
+                  )}
                   {reportNews.length > 0 && (
                     <span className="badge badge-green solid">
                       {reportNews.length} nouveauté{reportNews.length > 1 ? 's' : ''}
@@ -1335,13 +1382,13 @@ function App() {
                     <Download size={16} />
                     Exporter en PDF
                   </button>
-                  {selectedReport.report_type === 'technical_watch' && (
+                  {isWatchReport(selectedReport) && (
                     <button type="button" className="btn btn-ghost" onClick={() => handleOpenNewsletter(selectedReport)}>
                       <Mail size={16} />
                       Newsletter
                     </button>
                   )}
-                  {selectedReport.report_type === 'technical_watch' && (
+                  {isWatchReport(selectedReport) && (
                     <button
                       type="button"
                       className="btn btn-ghost"
@@ -1744,8 +1791,11 @@ function App() {
       .filter((report): report is Report => Boolean(report));
     const addableReports = reports.filter((report) => !activeChatReportIds.includes(report.id));
     const filteredNotes = notesFilter === 'all' ? notes : notes.filter((note) => note.kind === notesFilter);
-    const reportLabel = (report: Report) =>
-      `${report.report_type === 'codir_note' ? 'Note CODIR' : 'Analyse'} du ${formatShortDate(report.created_at)}`;
+    const reportLabel = (report: Report) => {
+      const kind =
+        report.report_type === 'codir_note' ? 'Note CODIR' : report.report_type === 'copilot_watch' ? 'Veille Copilot' : 'Analyse';
+      return `${kind} du ${formatShortDate(report.created_at)}`;
+    };
     const NOTE_FILTERS: Array<{ id: typeof notesFilter; label: string }> = [
       { id: 'all', label: 'Toutes' },
       { id: 'note', label: 'Notes' },
@@ -2014,7 +2064,17 @@ function App() {
           </nav>
 
           <div className="topbar-actions">
-            <button type="button" onClick={handleTrigger} disabled={loading} className="btn btn-primary">
+            <button
+              type="button"
+              onClick={handleTriggerCopilot}
+              disabled={loading || copilotLoading}
+              className="btn btn-secondary"
+              title="Veille dédiée à Microsoft 365 Copilot, Copilot Studio, Work IQ et Copilot Cowork sur les 7 derniers jours"
+            >
+              <Sparkles className={copilotLoading ? 'animate-spin' : ''} size={16} />
+              {copilotLoading ? 'Veille Copilot en cours…' : 'Veille Microsoft Copilot'}
+            </button>
+            <button type="button" onClick={handleTrigger} disabled={loading || copilotLoading} className="btn btn-primary">
               <RefreshCw className={loading ? 'animate-spin' : ''} size={16} />
               {loading ? 'Analyse en cours…' : 'Lancer la veille'}
             </button>

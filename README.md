@@ -26,6 +26,21 @@ Manual start, containers (`./compose.sh start`), tests and troubleshooting: [doc
 
 With `REDDIT_ENABLED=true`, the daily watch also reads the top posts of the last 24 h from `REDDIT_SUBREDDITS` (default `LocalLLaMA,ClaudeAI,OpenAI,ChatGPTCoding,MachineLearning,singularity`) through Reddit's public RSS feed — no Reddit account or app (Reddit grants none, and its JSON API returns 403 without one). All subreddits are read in a single request, since Reddit allows about one anonymous request per minute. The feed has no score, so the rank in the day's top is used instead; meme-like posts and duplicate links are dropped, and at most `REDDIT_MAX_POSTS_PER_SUB` (5) per subreddit and `REDDIT_MAX_POSTS` (15) in total are added to the prompt as leads to verify on primary sources. `REDDIT_USER_AGENT` and `REDDIT_TIMEOUT_SECONDS` are optional. If Reddit fails, the watch is generated exactly as without it. Check what would be sent with `GET /reddit/preview?subreddit=LocalLLaMA&period=day` (no LLM call). Details: [docs/CONFIGURATION.md](docs/CONFIGURATION.md#reddit).
 
+## Microsoft Copilot watch (weekly)
+
+The « Veille Microsoft Copilot » button (`POST /reports/copilot/trigger`) generates a dedicated report (`report_type = copilot_watch`) covering the last 7 days of Microsoft 365 Copilot, Copilot Studio, Work IQ and Copilot Cowork. Same structure as the daily watch (so news extraction, structured view, PDF, newsletter and chat work on it), plus per-item Roadmap ID, status, required licence, EU / French-tenant availability and M365 admin impact. Items already covered by previous Copilot watches are not repeated; the dashboard and the daily watch are unchanged.
+
+How the information is found:
+
+- the app itself reads the **public Microsoft 365 Roadmap JSON API** (`https://www.microsoft.com/releasecommunications/api/v1/m365`, no account) and passes the Copilot / Copilot Studio / Work IQ / Cowork items created or updated in the window to the LLM, with their Roadmap IDs (`COPILOT_ROADMAP_ENABLED`, `COPILOT_ROADMAP_MAX_ITEMS`, `COPILOT_ROADMAP_TIMEOUT_SECONDS`);
+- the prompt makes the LLM search, one by one: Microsoft 365 Roadmap (Copilot filter), What's new in Microsoft 365 Copilot (`learn.microsoft.com/microsoft-365/copilot/release-notes`), What's new in Copilot Studio (`learn.microsoft.com/microsoft-copilot-studio/whats-new`), Microsoft 365 Blog, Tech Community Microsoft Copilot blog, Work IQ docs (`learn.microsoft.com/microsoft-iq/`), Copilot Cowork docs (`learn.microsoft.com/microsoft-365/copilot/cowork/`).
+
+Weekly cron: `POST /cron/copilot-weekly` (`?force=true` to regenerate) only generates if no Copilot watch exists in the last 7 days:
+
+```bash
+0 7 * * 1 curl -fsS -X POST --max-time 900 -H "Authorization: Bearer $API_TOKEN" http://localhost:8000/cron/copilot-weekly >> ~/veille-cron.log 2>&1
+```
+
 ## Daily run (cron) and newsletter
 
 `POST /cron/daily` generates today's watch if it does not exist yet (`?force=true` to regenerate) and returns the report id and its newsletter URL. Generation takes several minutes, so give the HTTP client a long timeout:
