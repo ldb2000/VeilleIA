@@ -20,6 +20,8 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 | 401 | Jeton absent ou invalide (seulement si `API_TOKEN` est défini). |
 | 404 | Ressource introuvable (`Report not found`, `News not found`, `Note not found`, `Summary not found`, `No reports available`). |
 | 409 | Une génération de veille est déjà en cours. |
+| 502 | Le serveur SMTP a refusé ou échoué l'envoi (connexion, authentification, destinataires). |
+| 503 | Envoi de mail non configuré (la réponse liste les variables manquantes). |
 | 422 | Paramètres ou corps invalides (validation FastAPI / Pydantic). |
 | 500 | Erreur du fournisseur LLM ou de configuration (message dans `detail`, ex. « Binaire Codex introuvable », « OPENROUTER_API_KEY manquant », délai dépassé). |
 
@@ -50,6 +52,8 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 | 21 | GET | `/reports/{report_id}/docx` | — | `.docx` (pièce jointe `note_codir_veille_ia_<date>.docx`) | 400 si pas une note CODIR, 404 |
 | 22 | GET | `/reports/{report_id}/newsletter` | — | `text/html` : corps d'email commençant par `<table>` | 404 |
 | 23 | GET | `/reddit/preview` | query `subreddit` (optionnel), `period` (`day`) | `RedditPreview` (aucun appel LLM) | 400 |
+| 24 | GET | `/mail/info` | — | `MailInfo` (sans mot de passe) | 401 |
+| 25 | POST | `/reports/{report_id}/send` | — | `SendNewsletterResult` | 404, 502, 503 |
 
 ## Détail des endpoints
 
@@ -63,10 +67,11 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 
 **`POST /reports/trigger`** — génère une veille maintenant (bouton « Lancer la veille »). Appel LLM avec recherche web, plusieurs minutes. 409 si une génération (bouton ou cron) est déjà en cours.
 
-**`POST /cron/daily`** — route destinée au cron. Si une `technical_watch` existe déjà pour la date du jour (Europe/Paris) et que `force` est faux, la renvoie sans rien générer (`created: false`). Sinon génère comme `/reports/trigger`.
+**`POST /cron/daily`** — route destinée au cron. Si une `technical_watch` existe déjà pour la date du jour (Europe/Paris) et que `force` est faux, la renvoie sans rien générer (`created: false`). Sinon génère comme `/reports/trigger`. Avec `MAIL_AUTO_SEND=true`, envoie ensuite la newsletter du rapport si elle ne l'a pas encore été (`newsletter_sent_at` vide) : `mail_sent` vaut `true` si l'envoi a eu lieu pendant cet appel ; en cas d'échec ou de configuration incomplète, la réponse reste 200 avec la cause dans `mail_error`, et le prochain appel retente l'envoi.
 
 ```json
-{"report_id": 42, "date": "2026-10-25", "created": true, "newsletter_url": "/reports/42/newsletter"}
+{"report_id": 42, "date": "2026-10-25", "created": true, "newsletter_url": "/reports/42/newsletter",
+ "mail_sent": true, "mail_error": null}
 ```
 
 **`POST /reports/{report_id}/codir`** — génère une note CODIR à partir du rapport, de son résumé et de ses notes ; l'enregistre comme nouveau rapport `codir_note`.
@@ -137,6 +142,23 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 
 **`GET /reports/{report_id}/newsletter`** — HTML de newsletter (voir [ARCHITECTURE.md](ARCHITECTURE.md#newsletter)).
 
+### Mail
+
+**`GET /mail/info`** — état de la configuration d'envoi, **sans mot de passe ni adresses des destinataires**. Le frontend s'en sert pour activer le bouton « Envoyer par mail ».
+
+```json
+{"configured": true, "missing": [], "host": "smtp.office365.com", "port": 587, "security": "starttls",
+ "authenticated": true, "sender": "Veille IA <veille@april.fr>", "recipients_count": 4, "auto_send": false}
+```
+
+**`POST /reports/{report_id}/send`** — envoie la newsletter du rapport (objet « Veille IA – <date> », HTML de `render_newsletter` + version texte = markdown du rapport) aux adresses de `MAIL_TO`, puis renseigne `newsletter_sent_at`. Renvoie même si la newsletter a déjà été envoyée. 404 si le rapport n'existe pas, 503 si le mail n'est pas configuré, 502 si l'envoi SMTP échoue (`newsletter_sent_at` inchangé).
+
+```json
+{"report_id": 42, "subject": "Veille IA – 2026-10-25", "recipients_count": 4, "newsletter_sent_at": "2026-10-25T05:42:10.123456"}
+```
+
+`Report` contient aussi `newsletter_sent_at` (UTC, `null` si jamais envoyée).
+
 ### Reddit
 
 **`GET /reddit/preview?subreddit=&period=`** — posts Reddit filtrés, tels qu'ils seraient ajoutés au prompt de veille, **sans appel LLM** (flux RSS public, une seule requête). Sert à régler la configuration ; fonctionne même avec `REDDIT_ENABLED=false` (le champ `enabled` indique si la veille les utilisera).
@@ -169,5 +191,7 @@ curl -X POST --max-time 900 -H "Authorization: Bearer $TOKEN" "http://localhost:
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
      -d '{"question": "Que faut-il tester cette semaine ?"}' http://localhost:8000/chat
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/reports/42/newsletter > newsletter.html
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/mail/info
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8000/reports/42/send
 curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/reddit/preview?subreddit=LocalLLaMA&period=day"
 ```

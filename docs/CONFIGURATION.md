@@ -68,6 +68,25 @@ Pas d'identifiants : Reddit n'accorde pas d'application et refuse son API JSON s
 - pas de flair ni d'indicateurs épinglé / NSFW : les mèmes sont écartés par heuristique (mot-clé dans le titre, ou image / vidéo au titre de moins de 5 mots) ;
 - 100 posts au plus pour l'ensemble des subreddits : les petits subreddits (ChatGPTCoding, MachineLearning) peuvent être absents un jour où les gros sont très actifs.
 
+## Mail (SMTP)
+
+Envoi de la newsletter par mail (`POST /reports/{id}/send`, bouton « Envoyer par mail », envoi automatique du cron). Sans ces variables, l'application fonctionne normalement : le bouton est grisé et l'envoi renvoie 503. Toutes sont lues à chaque appel.
+
+| Variable | Défaut | Effet |
+| --- | --- | --- |
+| `SMTP_HOST` | *(vide)* | Serveur SMTP (ex. `smtp.office365.com`, `smtp.gmail.com`, relais interne). Obligatoire. |
+| `SMTP_PORT` | `587` | Port. `465` active le SSL implicite (voir `SMTP_SSL`). |
+| `SMTP_USER` | *(vide)* | Identifiant d'authentification. Vide : pas d'authentification (relais interne). |
+| `SMTP_PASSWORD` | *(vide)* | Mot de passe (ou mot de passe d'application). Obligatoire si `SMTP_USER` est défini. Jamais renvoyé par l'API ni écrit dans les logs. |
+| `SMTP_STARTTLS` | `true` | Passe la connexion en TLS (`STARTTLS`) avant l'authentification. Ignoré en SSL implicite. |
+| `SMTP_SSL` | `true` si `SMTP_PORT=465`, sinon `false` | SSL implicite (`SMTP_SSL`) dès la connexion. |
+| `SMTP_TIMEOUT_SECONDS` | `30` | Délai de connexion et d'échange avec le serveur. |
+| `MAIL_FROM` | valeur de `SMTP_USER` | Expéditeur, avec ou sans nom affiché (`Veille IA <veille@april.fr>`). Obligatoire si `SMTP_USER` est vide. |
+| `MAIL_TO` | *(vide)* | Destinataires, séparés par des virgules (doublons et adresses invalides ignorés). Obligatoire. |
+| `MAIL_AUTO_SEND` | `false` | `true` : `POST /cron/daily` envoie la newsletter du jour si elle ne l'a pas encore été. |
+
+Microsoft 365 et Gmail exigent en général un mot de passe d'application (ou l'activation de l'authentification SMTP) pour un compte avec double authentification.
+
 ## Base de données
 
 | Variable | Défaut | Effet |
@@ -99,6 +118,13 @@ LLM_REPORT_TIMEOUT_SECONDS=600
 
 # OPENROUTER_API_KEY=sk-or-…
 # OPENROUTER_MODEL=openrouter/auto
+
+# SMTP_HOST=smtp.office365.com
+# SMTP_USER=veille@april.fr
+# SMTP_PASSWORD=…
+# MAIL_FROM=Veille IA <veille@april.fr>
+# MAIL_TO=equipe-stti@april.fr
+# MAIL_AUTO_SEND=true
 
 # REDDIT_ENABLED=true
 # REDDIT_SUBREDDITS=LocalLLaMA,ClaudeAI,OpenAI

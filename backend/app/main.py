@@ -32,6 +32,7 @@ from reportlab.platypus import Image as RLImage, Paragraph, SimpleDocTemplate, S
 from . import models, schemas, database
 from .newsletter import render_newsletter
 from . import reddit
+from . import mailer
 
 if TYPE_CHECKING:
     from google.oauth2.credentials import Credentials
@@ -60,6 +61,8 @@ def ensure_reports_schema() -> None:
             connection.execute(
                 text("UPDATE reports SET report_type = 'technical_watch' WHERE report_type IS NULL")
             )
+        if "newsletter_sent_at" not in columns:
+            connection.execute(text("ALTER TABLE reports ADD COLUMN newsletter_sent_at DATETIME"))
 
 
 ensure_reports_schema()
@@ -1923,9 +1926,74 @@ def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token)):
         WATCH_GENERATION_LOCK.release()
 
 
+# Un envoi de newsletter à la fois : évite un double envoi si le cron et le bouton se croisent.
+MAIL_SEND_LOCK = threading.Lock()
+
+
+def newsletter_subject(report: models.Report) -> str:
+    return f"Veille IA – {report.date}"
+
+
+def build_newsletter_email_html(report: models.Report) -> str:
+    """Newsletter dans un document HTML complet (l'endpoint /newsletter renvoie le corps seul)."""
+    body = render_newsletter(report.content or "", report.date)
+    return (
+        '<!doctype html><html lang="fr"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{escape(newsletter_subject(report))}</title></head>"
+        f'<body style="margin:0;padding:0;">{body}</body></html>'
+    )
+
+
+def send_report_newsletter(db: Session, report: models.Report, only_if_unsent: bool = False) -> Optional[list[str]]:
+    """Envoie la newsletter du rapport et renseigne newsletter_sent_at.
+    Renvoie les destinataires, ou None si only_if_unsent et déjà envoyée.
+    Lève mailer.MailNotConfigured / mailer.MailSendError."""
+    with MAIL_SEND_LOCK:
+        db.refresh(report)
+        if only_if_unsent and report.newsletter_sent_at is not None:
+            return None
+        recipients = mailer.send_html_email(
+            newsletter_subject(report),
+            build_newsletter_email_html(report),
+            text=report.content or None,
+        )
+        report.newsletter_sent_at = datetime.utcnow()
+        db.commit()
+        db.refresh(report)
+        return recipients
+
+
+def auto_send_newsletter(db: Session, report: models.Report) -> tuple[bool, Optional[str]]:
+    """Envoi automatique du cron : (mail_sent, mail_error). Ne lève jamais."""
+    if not mailer.mail_auto_send():
+        return False, None
+    try:
+        return send_report_newsletter(db, report, only_if_unsent=True) is not None, None
+    except (mailer.MailNotConfigured, mailer.MailSendError) as e:
+        print(f"Mail : envoi automatique de la newsletter {report.id} impossible : {e}")
+        return False, str(e)
+    except Exception as e:
+        print(f"Mail : envoi automatique de la newsletter {report.id} impossible : {type(e).__name__}")
+        return False, f"Erreur inattendue : {type(e).__name__}"
+
+
+def daily_run_response(db: Session, report: models.Report, created: bool) -> dict:
+    mail_sent, mail_error = auto_send_newsletter(db, report)
+    return {
+        "report_id": report.id,
+        "date": report.date,
+        "created": created,
+        "newsletter_url": f"/reports/{report.id}/newsletter",
+        "mail_sent": mail_sent,
+        "mail_error": mail_error,
+    }
+
+
 @app.post("/cron/daily", response_model=schemas.DailyRunResponse)
 def run_daily_watch(force: bool = False, db: Session = Depends(get_db), _=Depends(verify_token)):
-    """Route pour le cron : génère la veille du jour si elle n'existe pas encore (force=true pour en refaire une)."""
+    """Route pour le cron : génère la veille du jour si elle n'existe pas encore (force=true pour en refaire une).
+    Avec MAIL_AUTO_SEND=true, envoie aussi la newsletter si elle ne l'a pas encore été."""
     today = today_paris()
     if not force:
         existing = (
@@ -1935,12 +2003,7 @@ def run_daily_watch(force: bool = False, db: Session = Depends(get_db), _=Depend
             .first()
         )
         if existing is not None:
-            return {
-                "report_id": existing.id,
-                "date": existing.date,
-                "created": False,
-                "newsletter_url": f"/reports/{existing.id}/newsletter",
-            }
+            return daily_run_response(db, existing, created=False)
 
     if not WATCH_GENERATION_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Une génération de veille est déjà en cours.")
@@ -1951,12 +2014,7 @@ def run_daily_watch(force: bool = False, db: Session = Depends(get_db), _=Depend
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         WATCH_GENERATION_LOCK.release()
-    return {
-        "report_id": report.id,
-        "date": report.date,
-        "created": True,
-        "newsletter_url": f"/reports/{report.id}/newsletter",
-    }
+    return daily_run_response(db, report, created=True)
 
 
 @app.get("/reports/{report_id}/newsletter", response_class=HTMLResponse)
@@ -1966,6 +2024,34 @@ def get_report_newsletter(report_id: int, db: Session = Depends(get_db), _=Depen
     if report is None:
         raise HTTPException(status_code=404, detail="Report not found")
     return HTMLResponse(render_newsletter(report.content or "", report.date))
+
+
+@app.get("/mail/info", response_model=schemas.MailInfo)
+def get_mail_info(_=Depends(verify_token)):
+    """Configuration d'envoi (sans mot de passe ni adresses des destinataires)."""
+    return mailer.describe_mail_config()
+
+
+# Synchrone : l'échange SMTP (plusieurs secondes) tourne dans le pool de threads.
+@app.post("/reports/{report_id}/send", response_model=schemas.SendNewsletterResponse)
+def send_newsletter(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
+    """Envoie la newsletter HTML du rapport aux destinataires de MAIL_TO."""
+    report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    try:
+        recipients = send_report_newsletter(db, report)
+    except mailer.MailNotConfigured as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except mailer.MailSendError as e:
+        print(f"Mail : envoi de la newsletter {report_id} impossible : {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+    return {
+        "report_id": report.id,
+        "subject": newsletter_subject(report),
+        "recipients_count": len(recipients or []),
+        "newsletter_sent_at": report.newsletter_sent_at,
+    }
 
 
 @app.post("/reports/{report_id}/codir", response_model=schemas.Report)

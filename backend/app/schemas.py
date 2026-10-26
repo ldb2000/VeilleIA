@@ -13,6 +13,7 @@ class ReportCreate(ReportBase):
 class Report(ReportBase):
     id: int
     created_at: datetime
+    newsletter_sent_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -113,6 +114,8 @@ class DailyRunResponse(BaseModel):
     date: str
     created: bool
     newsletter_url: str
+    mail_sent: bool = False
+    mail_error: Optional[str] = None
 
 
 class RedditPost(BaseModel):
@@ -135,3 +138,22 @@ class RedditPreview(BaseModel):
     max_posts_per_sub: int
     posts: List[RedditPost]
     errors: List[str]
+
+
+class MailInfo(BaseModel):
+    configured: bool
+    missing: List[str]
+    host: Optional[str] = None
+    port: int
+    security: str
+    authenticated: bool
+    sender: Optional[str] = None
+    recipients_count: int
+    auto_send: bool
+
+
+class SendNewsletterResponse(BaseModel):
+    report_id: int
+    subject: str
+    recipients_count: int
+    newsletter_sent_at: Optional[datetime] = None

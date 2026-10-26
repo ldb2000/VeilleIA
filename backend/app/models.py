@@ -11,6 +11,7 @@ class Report(Base):
     report_type = Column(String, default="technical_watch", index=True)
     content = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+    newsletter_sent_at = Column(DateTime, nullable=True)
 
 
 class ReportSummary(Base):

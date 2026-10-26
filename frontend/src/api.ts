@@ -13,6 +13,7 @@ export interface Report {
   report_type: string;
   content: string;
   created_at: string;
+  newsletter_sent_at?: string | null;
 }
 
 export interface ReportSummary {
@@ -150,6 +151,35 @@ export const createNote = async (
 
 export const deleteNote = async (noteId: number): Promise<void> => {
   await axios.delete(`${API_URL}/notes/${noteId}`);
+};
+
+export interface MailInfo {
+  configured: boolean;
+  missing: string[];
+  host: string | null;
+  port: number;
+  security: string;
+  authenticated: boolean;
+  sender: string | null;
+  recipients_count: number;
+  auto_send: boolean;
+}
+
+export interface SendNewsletterResult {
+  report_id: number;
+  subject: string;
+  recipients_count: number;
+  newsletter_sent_at: string | null;
+}
+
+export const getMailInfo = async (): Promise<MailInfo> => {
+  const response = await axios.get(`${API_URL}/mail/info`);
+  return response.data;
+};
+
+export const sendReportNewsletter = async (id: number): Promise<SendNewsletterResult> => {
+  const response = await axios.post(`${API_URL}/reports/${id}/send`);
+  return response.data;
 };
 
 export const getReportNewsletter = async (id: number): Promise<string> => {

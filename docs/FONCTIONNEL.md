@@ -23,7 +23,7 @@ Lecture d'un rapport.
 
 - **Historique** (colonne de gauche, repliable) avec filtre texte ; menu d'actions par rapport (exports, suppression).
 - **En-tête** : type (Analyse technique ou Note CODIR), date, badges (nouveautés, sources, news sauvegardées, résumé) et actions :
-  - veille : « Générer la note CODIR », « Résumé exécutif », « Exporter en PDF », « Newsletter », « Partager dans Teams » ;
+  - veille : « Générer la note CODIR », « Résumé exécutif », « Exporter en PDF », « Newsletter », « Envoyer par mail », « Partager dans Teams » ;
   - note CODIR : « Exporter en Word », « Exporter en PDF », « Partager dans Teams ».
 - **Résumé exécutif** repliable, s'il a été généré.
 - **Lecture structurée** quand le rapport suit le format de veille : carte TL;DR, grille du radar (tester / surveiller / ignorer), une carte par nouveauté avec ses champs, badge de maturité, encadré « Action recommandée » et bouton **Sauvegarder**. Les autres sections et les rapports anciens s'affichent en markdown.
@@ -62,7 +62,7 @@ Conversation avec l'assistant sur les rapports.
 | **Préparer le CODIR** | « Générer la note CODIR », puis « Exporter en Word » | Note d'une page pour des directeurs non techniques (synthèse, décisions proposées, points de vigilance), construite à partir du rapport, de son résumé et des notes. Enregistrée comme rapport « Note CODIR ». |
 | **Interroger la veille** | Vue Recherches | Réponse fondée sur les rapports choisis, avec citations ; option web pour compléter. |
 | **Exporter** | « Exporter en PDF » (tout rapport), « Exporter en Word » (note CODIR) | PDF : résumé, rapport complet, notes. Word : note CODIR mise en page. |
-| **Diffuser par email** | « Newsletter » | Ouvre dans un onglet une newsletter HTML prête à coller dans un client mail (Gmail, Outlook). Rien n'est envoyé automatiquement. |
+| **Diffuser par email** | « Newsletter », ou « Envoyer par mail » | « Newsletter » ouvre dans un onglet la newsletter HTML, prête à coller dans un client mail. « Envoyer par mail » l'envoie, après confirmation, aux destinataires configurés (`MAIL_TO`) avec l'objet « Veille IA – <date> » ; le bouton devient « Renvoyer par mail » et son info-bulle donne la date du dernier envoi. Grisé si le mail n'est pas configuré. Avec `MAIL_AUTO_SEND=true`, le cron l'envoie automatiquement une fois par jour. |
 | **Partager dans Teams** | « Partager dans Teams » | Télécharge le PDF (ou le Word pour une note CODIR) et ouvre la conversation Teams de l'équipe pour y déposer le fichier. |
 | **Supprimer un rapport** | Menu du rapport dans l'historique | Supprime le rapport, son résumé, ses notes et ses news non sauvegardées. |
 
