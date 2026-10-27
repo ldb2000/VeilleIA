@@ -1,0 +1,46 @@
+# Déploiement NAS : inclus par /volume1/services/docker-compose.yml (Traefik + cloudflared).
+# Servi sur https://veilleia-app.deberti.fr : `/` → frontend, `/api` → backend (préfixe retiré).
+# Le réseau `proxy` est déclaré par le compose principal (docker compose 2.20 refuse qu'un fichier
+# inclus le redéclare) : ce fichier ne se lance pas seul.
+services:
+  veilleia-backend:
+    build:
+      context: ./backend
+      # Le bridge Docker par défaut du NAS ne joint pas le DNS local : build sur le réseau hôte.
+      network: host
+    container_name: veilleia-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      - DATABASE_URL=sqlite:///./data/sql_app.db
+    volumes:
+      - ./data:/app/data
+      # Authentification Codex (auth.json + config.toml), en écriture pour le rafraîchissement du jeton.
+      - ./codex:/root/.codex
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.veilleia-api.rule=Host(`veilleia-app.deberti.fr`) && PathPrefix(`/api`)
+      - traefik.http.routers.veilleia-api.entrypoints=web
+      - traefik.http.routers.veilleia-api.middlewares=veilleia-api-strip
+      - traefik.http.middlewares.veilleia-api-strip.stripprefix.prefixes=/api
+      - traefik.http.services.veilleia-api.loadbalancer.server.port=8000
+    restart: unless-stopped
+
+  veilleia-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      network: host
+    container_name: veilleia-frontend
+    depends_on:
+      - veilleia-backend
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.veilleia.rule=Host(`veilleia-app.deberti.fr`)
+      - traefik.http.routers.veilleia.entrypoints=web
+      - traefik.http.services.veilleia.loadbalancer.server.port=80
+    restart: unless-stopped
