@@ -2055,7 +2055,7 @@ def generate_watch_report(
     return db_report
 
 
-# Générations longues (veille, note CODIR) lancées en tâche de fond : le proxy Cloudflare coupe
+# Générations longues (veilles, note CODIR) lancées en tâche de fond : le proxy Cloudflare coupe
 # toute requête sans réponse après 125 s. Le frontend interroge GET /jobs/{id} jusqu'à la fin.
 # Registre en mémoire : suffisant avec un seul worker uvicorn, perdu au redémarrage.
 JOBS: dict = {}
@@ -2102,18 +2102,16 @@ def trigger_report(_=Depends(verify_token)):
     return start_report_job("technical_watch", generate_watch_report, release_lock=WATCH_GENERATION_LOCK)
 
 
-@app.post("/reports/copilot/trigger", response_model=schemas.Report)
-def trigger_copilot_report(db: Session = Depends(get_db), _=Depends(verify_token)):
+@app.post("/reports/copilot/trigger", response_model=schemas.Job, status_code=202)
+def trigger_copilot_report(_=Depends(verify_token)):
     """Veille Microsoft Copilot (7 derniers jours) à la demande. Même verrou que la veille quotidienne."""
     if not WATCH_GENERATION_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Une génération de veille est déjà en cours.")
-    try:
-        return generate_watch_report(db, report_type="copilot_watch", prompt_builder=build_copilot_prompt)
-    except Exception as e:
-        print(f"Error triggering Copilot report: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        WATCH_GENERATION_LOCK.release()
+    return start_report_job(
+        "copilot_watch",
+        lambda db: generate_watch_report(db, report_type="copilot_watch", prompt_builder=build_copilot_prompt),
+        release_lock=WATCH_GENERATION_LOCK,
+    )
 
 
 # Un envoi de newsletter à la fois : évite un double envoi si le cron et le bouton se croisent.

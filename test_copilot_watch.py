@@ -241,11 +241,13 @@ def test_roadmap_can_be_disabled(monkeypatch):
 # --- Génération, endpoints, cron ---------------------------------------------------------
 
 
-def test_trigger_creates_copilot_watch_with_news(copilot_env):
+def test_trigger_creates_copilot_watch_with_news(copilot_env, wait_job):
     client = TestClient(main.app)
     response = client.post("/reports/copilot/trigger")
-    assert response.status_code == 200
-    report = response.json()
+    assert response.status_code == 202 and response.json()["kind"] == "copilot_watch"
+    job = wait_job(client, response.json())
+    assert job["status"] == "done"
+    report = client.get(f"/reports/{job['report_id']}").json()
     assert report["report_type"] == "copilot_watch" and report["date"] == "2099-05-10"
 
     prompt, web_search = copilot_env[0]
@@ -294,9 +296,10 @@ def test_weekly_cron_does_not_regenerate_within_7_days(copilot_env, monkeypatch)
 # --- Exports et chat ---------------------------------------------------------------------
 
 
-def test_pdf_newsletter_and_chat_work_on_copilot_report(copilot_env, monkeypatch):
+def test_pdf_newsletter_and_chat_work_on_copilot_report(copilot_env, monkeypatch, wait_job):
     client = TestClient(main.app)
-    report = client.post("/reports/copilot/trigger").json()
+    job = wait_job(client, client.post("/reports/copilot/trigger").json())
+    report = client.get(f"/reports/{job['report_id']}").json()
 
     pdf = client.get(f"/reports/{report['id']}/pdf")
     assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")

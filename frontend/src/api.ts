@@ -93,8 +93,8 @@ export const triggerReport = async (): Promise<Report> => {
 
 // Veille Microsoft Copilot (7 derniers jours) : rapport de type copilot_watch.
 export const triggerCopilotReport = async (): Promise<Report> => {
-  const response = await axios.post(`${API_URL}/reports/copilot/trigger`);
-  return response.data;
+  const response = await axios.post<Job>(`${API_URL}/reports/copilot/trigger`);
+  return waitForJobReport(response.data);
 };
 
 export const generateCodirNote = async (id: number): Promise<Report> => {

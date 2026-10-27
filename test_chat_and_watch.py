@@ -134,17 +134,8 @@ def test_llm_info_endpoint(monkeypatch):
     assert info["web_search"] is False
 
 
-def wait_job(client, job, timeout=5.0):
-    import time
 
-    deadline = time.monotonic() + timeout
-    while job["status"] == "running" and time.monotonic() < deadline:
-        time.sleep(0.02)
-        job = client.get(f"/jobs/{job['id']}").json()
-    return job
-
-
-def test_trigger_and_codir_run_as_background_jobs(monkeypatch):
+def test_trigger_and_codir_run_as_background_jobs(monkeypatch, wait_job):
     monkeypatch.setattr(main, "ensure_llm_ready", lambda: None)
     monkeypatch.setattr(main, "generate_llm_content", lambda prompt, timeout_seconds=0, web_search=False: REPORT)
     client = TestClient(app)

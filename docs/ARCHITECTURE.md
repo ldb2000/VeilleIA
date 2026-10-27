@@ -36,7 +36,7 @@
 
 | Fichier | Rôle |
 | --- | --- |
-| `main.py` | Application FastAPI : CORS, authentification (`verify_token`), migrations légères, couche LLM (Codex, OpenRouter, Gemini), prompts (`TECHNICAL_PROMPT`, `COPILOT_WATCH_PROMPT`, `CODIR_NOTE_PROMPT`, prompts inline de résumé / détail / définition / chat), extraction des news, rendu PDF (ReportLab) et DOCX (python-docx), les 27 endpoints. |
+| `main.py` | Application FastAPI : CORS, authentification (`verify_token`), migrations légères, couche LLM (Codex, OpenRouter, Gemini), prompts (`TECHNICAL_PROMPT`, `COPILOT_WATCH_PROMPT`, `CODIR_NOTE_PROMPT`, prompts inline de résumé / détail / définition / chat), extraction des news, rendu PDF (ReportLab) et DOCX (python-docx), les 28 endpoints. |
 | `newsletter.py` | Rendu déterministe d'un rapport en corps d'email HTML compatible Gmail / Outlook (`render_newsletter`). Aucun appel LLM. |
 | `mailer.py` | Envoi d'emails par SMTP (`send_html_email`, smtplib + `email.message`, multipart/alternative texte + HTML). Configuration lue dans l'environnement à chaque appel (`load_mail_config`) ; `describe_mail_config` ne renvoie jamais le mot de passe. |
 | `m365_roadmap.py` | Lecture de l'API JSON publique du Microsoft 365 Roadmap pour la veille Microsoft Copilot (`collect_copilot_roadmap`, `filter_copilot_items`, `build_roadmap_prompt_section`). Ne lève jamais d'exception. |

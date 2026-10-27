@@ -32,11 +32,11 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 | 1 | GET | `/reports` | query `skip` (0), `limit` (100) | `Report[]`, du plus récent au plus ancien | 401 |
 | 2 | GET | `/reports/{report_id}` | — | `Report` | 404 |
 | 3 | DELETE | `/reports/{report_id}` | — | 204 | 404 |
-| 4 | POST | `/reports/trigger` | — | `Report` (nouvelle `technical_watch`) | 409, 500 |
+| 4 | POST | `/reports/trigger` | — | 202 `Job` (génère une `technical_watch` en tâche de fond) | 409 |
 | 5 | POST | `/cron/daily` | query `force` (bool, `false`) | `DailyRunResponse` | 409, 500 |
-| 6 | POST | `/reports/copilot/trigger` | — | `Report` (nouvelle `copilot_watch`) | 409, 500 |
+| 6 | POST | `/reports/copilot/trigger` | — | 202 `Job` (génère une `copilot_watch` en tâche de fond) | 409 |
 | 7 | POST | `/cron/copilot-weekly` | query `force` (bool, `false`) | `DailyRunResponse` | 409, 500 |
-| 8 | POST | `/reports/{report_id}/codir` | — | `Report` (nouvelle `codir_note`) | 404, 500 |
+| 8 | POST | `/reports/{report_id}/codir` | — | 202 `Job` (génère une `codir_note` en tâche de fond) | 404 |
 | 9 | GET | `/reports/{report_id}/summary` | — | `ReportSummaryResponse` | 404 (pas encore de résumé) |
 | 10 | POST | `/reports/{report_id}/summary` | — | `ReportSummaryResponse` (généré ou régénéré) | 404, 500 |
 | 11 | POST | `/reports/{report_id}/detail` | query `selected_text` | `{"detail": str}` | 404, 422, 500 |
@@ -56,6 +56,7 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 | 25 | GET | `/reddit/preview` | query `subreddit` (optionnel), `period` (`day`) | `RedditPreview` (aucun appel LLM) | 400 |
 | 26 | GET | `/mail/info` | — | `MailInfo` (sans mot de passe) | 401 |
 | 27 | POST | `/reports/{report_id}/send` | — | `SendNewsletterResult` | 404, 502, 503 |
+| 28 | GET | `/jobs/{job_id}` | — | `Job` | 404 (inconnue ou serveur redémarré) |
 
 ## Détail des endpoints
 
@@ -67,7 +68,14 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
 
 **`DELETE /reports/{report_id}`** — supprime le rapport, son résumé, ses notes et ses news non sauvegardées. Les news sauvegardées sont conservées et détachées (`report_id = null`, `report_date` conservée).
 
-**`POST /reports/trigger`** — génère une veille maintenant (bouton « Lancer la veille »). Appel LLM avec recherche web, plusieurs minutes. 409 si une génération (bouton ou cron) est déjà en cours.
+**`POST /reports/trigger`** — génère une veille maintenant (bouton « Lancer la veille »). Appel LLM avec recherche web, plusieurs minutes, donc lancé en tâche de fond : la réponse 202 est une `Job` à suivre avec `GET /jobs/{job_id}` (le proxy Cloudflare coupe toute requête sans réponse après 125 s). 409 si une génération (bouton ou cron) est déjà en cours.
+
+**`GET /jobs/{job_id}`** — état d'une génération en tâche de fond (veilles, note CODIR). `status` vaut `running`, `done` (`report_id` du rapport créé) ou `error` (`error` contient le message, par exemple une erreur du fournisseur LLM). Registre en mémoire : une tâche est perdue si le backend redémarre (404).
+
+```json
+{"id": "3f2c…", "kind": "technical_watch", "status": "done", "report_id": 43, "error": null,
+ "started_at": "2026-10-27T19:02:11"}
+```
 
 **`POST /cron/daily`** — route destinée au cron. Si une `technical_watch` existe déjà pour la date du jour (Europe/Paris) et que `force` est faux, la renvoie sans rien générer (`created: false`). Sinon génère comme `/reports/trigger`. Avec `MAIL_AUTO_SEND=true`, envoie ensuite la newsletter du rapport si elle ne l'a pas encore été (`newsletter_sent_at` vide) : `mail_sent` vaut `true` si l'envoi a eu lieu pendant cet appel ; en cas d'échec ou de configuration incomplète, la réponse reste 200 avec la cause dans `mail_error`, et le prochain appel retente l'envoi.
 
@@ -76,11 +84,11 @@ Le frontend envoie cet en-tête si `VITE_API_TOKEN` est défini (voir [CONFIGURA
  "mail_sent": true, "mail_error": null}
 ```
 
-**`POST /reports/copilot/trigger`** — génère maintenant une veille Microsoft Copilot (`copilot_watch`) sur les 7 derniers jours : Microsoft 365 Copilot, Copilot Studio, Work IQ, Copilot Cowork. Appel LLM avec recherche web, plus les éléments récents du Microsoft 365 Roadmap. Même verrou que la veille quotidienne (409).
+**`POST /reports/copilot/trigger`** — génère maintenant une veille Microsoft Copilot (`copilot_watch`) sur les 7 derniers jours : Microsoft 365 Copilot, Copilot Studio, Work IQ, Copilot Cowork. Appel LLM avec recherche web, plus les éléments récents du Microsoft 365 Roadmap. Tâche de fond (202 `Job`) comme `/reports/trigger`, même verrou que la veille quotidienne (409).
 
 **`POST /cron/copilot-weekly`** — route pour un cron hebdomadaire. Si une `copilot_watch` existe déjà sur les 7 derniers jours et que `force` est faux, la renvoie (`created: false`). Sinon génère comme `/reports/copilot/trigger`. Réponse identique à `/cron/daily` (dont `newsletter_url` et l'envoi automatique `mail_sent` / `mail_error`).
 
-**`POST /reports/{report_id}/codir`** — génère une note CODIR à partir du rapport, de son résumé et de ses notes ; l'enregistre comme nouveau rapport `codir_note`.
+**`POST /reports/{report_id}/codir`** — génère une note CODIR à partir du rapport, de son résumé et de ses notes ; l'enregistre comme nouveau rapport `codir_note`. Tâche de fond (202 `Job`, voir `GET /jobs/{job_id}`) ; 404 immédiat si le rapport source n'existe pas.
 
 ### Résumé, détail, définition
 
