@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from html import escape, unescape
 from pathlib import Path
@@ -2054,19 +2055,51 @@ def generate_watch_report(
     return db_report
 
 
-# Fonction synchrone : FastAPI l'exécute dans un thread, l'appel LLM (plusieurs minutes)
-# ne bloque donc plus les autres requêtes.
-@app.post("/reports/trigger", response_model=schemas.Report)
-def trigger_report(db: Session = Depends(get_db), _=Depends(verify_token)):
+# Générations longues (veille, note CODIR) lancées en tâche de fond : le proxy Cloudflare coupe
+# toute requête sans réponse après 125 s. Le frontend interroge GET /jobs/{id} jusqu'à la fin.
+# Registre en mémoire : suffisant avec un seul worker uvicorn, perdu au redémarrage.
+JOBS: dict = {}
+JOBS_LOCK = threading.Lock()
+
+
+def start_report_job(kind: str, work, release_lock: Optional[threading.Lock] = None) -> dict:
+    """Exécute `work(db) -> Report` dans un thread et renvoie l'état initial de la tâche."""
+    job_id = uuid.uuid4().hex
+    job = {"id": job_id, "kind": kind, "status": "running", "report_id": None, "error": None,
+           "started_at": datetime.now()}
+    with JOBS_LOCK:
+        JOBS[job_id] = job
+
+    def run():
+        db = SessionLocal()
+        try:
+            report = work(db)
+            job.update(status="done", report_id=report.id)
+        except Exception as e:
+            print(f"Error in {kind} job: {e}")
+            job.update(status="error", error=str(e))
+        finally:
+            db.close()
+            if release_lock is not None:
+                release_lock.release()
+
+    threading.Thread(target=run, name=f"job-{kind}-{job_id[:8]}", daemon=True).start()
+    return dict(job)
+
+
+@app.get("/jobs/{job_id}", response_model=schemas.Job)
+def get_job(job_id: str, _=Depends(verify_token)):
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Tâche inconnue (le serveur a peut-être redémarré).")
+    return dict(job)
+
+
+@app.post("/reports/trigger", response_model=schemas.Job, status_code=202)
+def trigger_report(_=Depends(verify_token)):
     if not WATCH_GENERATION_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Une génération de veille est déjà en cours.")
-    try:
-        return generate_watch_report(db)
-    except Exception as e:
-        print(f"Error triggering report: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        WATCH_GENERATION_LOCK.release()
+    return start_report_job("technical_watch", generate_watch_report, release_lock=WATCH_GENERATION_LOCK)
 
 
 @app.post("/reports/copilot/trigger", response_model=schemas.Report)
@@ -2251,8 +2284,14 @@ def send_newsletter(report_id: int, db: Session = Depends(get_db), _=Depends(ver
     }
 
 
-@app.post("/reports/{report_id}/codir", response_model=schemas.Report)
-def generate_codir_note(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
+@app.post("/reports/{report_id}/codir", response_model=schemas.Job, status_code=202)
+def trigger_codir_note(report_id: int, db: Session = Depends(get_db), _=Depends(verify_token)):
+    if db.query(models.Report.id).filter(models.Report.id == report_id).first() is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return start_report_job("codir_note", lambda job_db: generate_codir_note(report_id, job_db))
+
+
+def generate_codir_note(report_id: int, db: Session) -> models.Report:
     source_report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if source_report is None:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -2277,24 +2316,20 @@ def generate_codir_note(report_id: int, db: Session = Depends(get_db), _=Depends
 
     prompt = CODIR_NOTE_PROMPT.format(watch_document="\n\n".join(watch_parts))
 
-    try:
-        ensure_llm_ready()
-        print(f"Sending CODIR note request to {describe_llm_backend()} timeout={LLM_REPORT_TIMEOUT_SECONDS}s")
-        response = generate_llm_content(prompt, timeout_seconds=LLM_REPORT_TIMEOUT_SECONDS)
-        content = response if isinstance(response, str) else response.text
+    ensure_llm_ready()
+    print(f"Sending CODIR note request to {describe_llm_backend()} timeout={LLM_REPORT_TIMEOUT_SECONDS}s")
+    response = generate_llm_content(prompt, timeout_seconds=LLM_REPORT_TIMEOUT_SECONDS)
+    content = response if isinstance(response, str) else response.text
 
-        db_report = models.Report(
-            date=datetime.now().strftime("%Y-%m-%d"),
-            report_type="codir_note",
-            content=content,
-        )
-        db.add(db_report)
-        db.commit()
-        db.refresh(db_report)
-        return db_report
-    except Exception as e:
-        print(f"Error generating CODIR note: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    db_report = models.Report(
+        date=datetime.now().strftime("%Y-%m-%d"),
+        report_type="codir_note",
+        content=content,
+    )
+    db.add(db_report)
+    db.commit()
+    db.refresh(db_report)
+    return db_report
 
 
 @app.get("/reports/{report_id}/pdf")

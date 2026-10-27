@@ -132,3 +132,43 @@ def test_llm_info_endpoint(monkeypatch):
     info = TestClient(app).get("/llm/info").json()
     assert info["provider"] == "openrouter"
     assert info["web_search"] is False
+
+
+def wait_job(client, job, timeout=5.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while job["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.02)
+        job = client.get(f"/jobs/{job['id']}").json()
+    return job
+
+
+def test_trigger_and_codir_run_as_background_jobs(monkeypatch):
+    monkeypatch.setattr(main, "ensure_llm_ready", lambda: None)
+    monkeypatch.setattr(main, "generate_llm_content", lambda prompt, timeout_seconds=0, web_search=False: REPORT)
+    client = TestClient(app)
+
+    response = client.post("/reports/trigger")
+    assert response.status_code == 202 and response.json()["kind"] == "technical_watch"
+    watch = wait_job(client, response.json())
+    assert watch["status"] == "done"
+    assert client.get(f"/reports/{watch['report_id']}").json()["report_type"] == "technical_watch"
+    # Le verrou est libéré à la fin de la tâche.
+    assert main.WATCH_GENERATION_LOCK.acquire(blocking=False)
+    main.WATCH_GENERATION_LOCK.release()
+
+    assert client.post("/reports/999999/codir").status_code == 404
+    codir = wait_job(client, client.post(f"/reports/{watch['report_id']}/codir").json())
+    assert codir["status"] == "done"
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("LLM indisponible")
+
+    monkeypatch.setattr(main, "generate_llm_content", boom)
+    failed = wait_job(client, client.post("/reports/trigger").json())
+    assert failed["status"] == "error" and "LLM indisponible" in failed["error"]
+    assert client.get("/jobs/inconnu").status_code == 404
+
+    for report_id in (watch["report_id"], codir["report_id"]):
+        client.delete(f"/reports/{report_id}")

@@ -39,6 +39,16 @@ class LLMInfo(BaseModel):
     backend: str
 
 
+class Job(BaseModel):
+    """Génération longue en tâche de fond (veille ou note CODIR), suivie via GET /jobs/{id}."""
+    id: str
+    kind: str
+    status: str  # running | done | error
+    report_id: Optional[int] = None
+    error: Optional[str] = None
+    started_at: datetime
+
+
 class ChatResponse(BaseModel):
     answer: str
 

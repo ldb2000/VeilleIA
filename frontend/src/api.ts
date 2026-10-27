@@ -61,9 +61,34 @@ export const getReport = async (id: number): Promise<Report> => {
   return response.data;
 };
 
+export interface Job {
+  id: string;
+  kind: string;
+  status: 'running' | 'done' | 'error';
+  report_id: number | null;
+  error: string | null;
+  started_at: string;
+}
+
+const JOB_POLL_INTERVAL_MS = 3000;
+
+// Les générations longues tournent en tâche de fond côté backend (le proxy Cloudflare coupe
+// au-delà de 125 s) : on interroge la tâche jusqu'à la fin puis on charge le rapport créé.
+const waitForJobReport = async (job: Job): Promise<Report> => {
+  let current = job;
+  while (current.status === 'running') {
+    await new Promise((resolve) => setTimeout(resolve, JOB_POLL_INTERVAL_MS));
+    current = (await axios.get<Job>(`${API_URL}/jobs/${current.id}`)).data;
+  }
+  if (current.status === 'error' || current.report_id === null) {
+    throw new Error(current.error ?? 'La génération a échoué.');
+  }
+  return getReport(current.report_id);
+};
+
 export const triggerReport = async (): Promise<Report> => {
-  const response = await axios.post(`${API_URL}/reports/trigger`);
-  return response.data;
+  const response = await axios.post<Job>(`${API_URL}/reports/trigger`);
+  return waitForJobReport(response.data);
 };
 
 // Veille Microsoft Copilot (7 derniers jours) : rapport de type copilot_watch.
@@ -73,8 +98,8 @@ export const triggerCopilotReport = async (): Promise<Report> => {
 };
 
 export const generateCodirNote = async (id: number): Promise<Report> => {
-  const response = await axios.post(`${API_URL}/reports/${id}/codir`);
-  return response.data;
+  const response = await axios.post<Job>(`${API_URL}/reports/${id}/codir`);
+  return waitForJobReport(response.data);
 };
 
 export const deleteReport = async (id: number): Promise<void> => {
