@@ -167,7 +167,7 @@ Si le fournisseur n'a pas accès au web, la génération de veille continue mais
 ### Génération de la veille quotidienne
 
 ```text
-POST /reports/trigger  ─┐
+POST /reports/trigger  ─┐                                                   (interface : 202 + tâche, voir ci-dessous)
 POST /cron/daily       ─┴► WATCH_GENERATION_LOCK.acquire(blocking=False) ──► 409 si déjà pris
                            generate_watch_report(db)
                              ├─ ensure_llm_ready()
@@ -183,6 +183,7 @@ POST /cron/daily       ─┴► WATCH_GENERATION_LOCK.acquire(blocking=False) �
 ```
 
 - Le verrou est un `threading.Lock` en mémoire : il protège un processus uvicorn unique, pas plusieurs instances.
+- **Tâches de fond** : `/reports/trigger`, `/reports/copilot/trigger` et `/reports/{id}/codir` prennent le verrou puis lancent la génération dans un thread (`start_report_job()`) et répondent tout de suite **202** avec une tâche `{id, kind, status, report_id, error}`. Le frontend interroge `GET /jobs/{id}` (`waitForJobReport()` dans `api.ts`) jusqu'à `done` ou `error`, puis charge le rapport. Raison : en production, Cloudflare coupe toute requête sans réponse après 125 s. Le registre `JOBS` est en mémoire (perdu au redémarrage). Les routes `/cron/*`, appelées en local par `nas-cron.sh`, restent synchrones.
 - `/cron/daily` ne génère rien si une `technical_watch` existe déjà pour la date du jour (sauf `force=true`), ce qui rend le cron rejouable.
 - `TECHNICAL_PROMPT` impose la méthode (recherches web ciblées, vérification des sources primaires et des dates), le périmètre, les axes d'analyse et le format de sortie décrit dans [FONCTIONNEL.md](FONCTIONNEL.md#structure-dun-rapport-de-veille).
 

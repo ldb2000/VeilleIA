@@ -2,7 +2,7 @@
 
 A web application that produces a daily technical watch on AI news (OpenAI, Anthropic, Google, Mistral, Microsoft, AWS, NVIDIA, open-source tooling…). An LLM with live web search (Codex CLI by default, or OpenRouter / Gemini) writes a decision-first report; the React interface lets the team read it, summarise it, annotate it, save individual news, query past reports in a chat, produce a CODIR note, and export to PDF, Word or an email-ready HTML newsletter.
 
-**Full documentation (French): [docs/](docs/README.md)** — [architecture](docs/ARCHITECTURE.md), [API](docs/API.md), [configuration](docs/CONFIGURATION.md), [functional guide](docs/FONCTIONNEL.md), [operations](docs/EXPLOITATION.md).
+**Full documentation (French): [docs/](docs/README.md)** — [architecture](docs/ARCHITECTURE.md), [API](docs/API.md), [configuration](docs/CONFIGURATION.md), [functional guide](docs/FONCTIONNEL.md), [operations](docs/EXPLOITATION.md), [acceptance testing](docs/RECETTE.md), [production on the NAS](docs/PRODUCTION.md).
 
 ## Prerequisites
 
@@ -21,6 +21,8 @@ A web application that produces a daily technical watch on AI news (OpenAI, Anth
 Configuration lives in `backend/.env`; every variable is described in [docs/CONFIGURATION.md](docs/CONFIGURATION.md). The main one is `LLM_PROVIDER` (`codex` by default; `openrouter` needs `OPENROUTER_API_KEY` and has no web search unless `OPENROUTER_WEB_SEARCH=true`).
 
 Manual start, containers (`./compose.sh start`), tests and troubleshooting: [docs/EXPLOITATION.md](docs/EXPLOITATION.md).
+
+Production runs on the Synology NAS behind Cloudflare Access, Cloudflare Tunnel and Traefik (https://veilleia-app.deberti.fr). A release is validated first with the acceptance checklist in [docs/RECETTE.md](docs/RECETTE.md), then deployed with `./deploy-nas.sh` and checked with the post-deployment list in [docs/PRODUCTION.md](docs/PRODUCTION.md) (crons, backup, rollback included).
 
 ## Reddit community signals (optional)
 

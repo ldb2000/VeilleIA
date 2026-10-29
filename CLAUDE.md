@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Full human documentation (French) lives in [docs/](docs/README.md): architecture, API (all endpoints), configuration (all env vars), functional guide, operations. Keep it in sync when you change endpoints, env vars, prompts or report structure.
+Full human documentation (French) lives in [docs/](docs/README.md): architecture, API (all endpoints), configuration (all env vars), functional guide, operations, acceptance testing (`RECETTE.md`) and NAS production (`PRODUCTION.md`). Keep it in sync when you change endpoints, env vars, prompts or report structure.
 
 ## Project
 
@@ -24,7 +24,7 @@ Frontend only — from `frontend/`:
 
 Containers: `./compose.sh start` (bootstraps `backend/.env` and `API_TOKEN`) or `podman-compose up --build` (also works with `docker compose`). Mounts `./data` for the SQLite DB, `./backend/app` (code only — the container runs uvicorn without `--reload`, restart after edits) and `~/.codex`.
 
-NAS (prod): `./deploy-nas.sh` sends the working tree by tar over SSH (`ssh -p 2222 laurent@diskstation`; Synology rsync needs the DSM rsync service) to `/volume1/services/veilleIA`, then rebuilds via `/volume1/services/docker-compose.yml` (Traefik + cloudflared, which `include:`s `compose.yml`). Served at https://veilleia-app.deberti.fr behind Cloudflare Access: `/` → nginx static build (`frontend/Dockerfile.prod`), `/api` → backend (prefix stripped). NAS-only state (`backend/.env`, `data/`, `codex/` auth) is never overwritten. Builds use `network: host` because the NAS default Docker bridge cannot reach the LAN DNS.
+NAS (prod): `./deploy-nas.sh` sends the working tree by tar over SSH (`ssh -p 2222 laurent@diskstation`; Synology rsync needs the DSM rsync service) to `/volume1/services/veilleIA`, then rebuilds via `/volume1/services/docker-compose.yml` (Traefik + cloudflared, which `include:`s `compose.yml`). Served at https://veilleia-app.deberti.fr behind Cloudflare Access: `/` → nginx static build (`frontend/Dockerfile.prod`), `/api` → backend (prefix stripped). NAS-only state (`backend/.env`, `data/`, `codex/` auth) is never overwritten. Builds use `network: host` because the NAS default Docker bridge cannot reach the LAN DNS. Full runbook (install, post-deploy checks, DSM crons via `nas-cron.sh`, hot SQLite backup, rollback by deploying an older worktree, Codex auth renewal) in `docs/PRODUCTION.md`; pre-release checklist in `docs/RECETTE.md`. `deploy-nas.sh` ships every non-git-ignored file: `backend/.env` and `*.db` are ignored, but `codex/` and `data/cron.log` are not, so never create them in a local checkout.
 
 ## Architecture
 

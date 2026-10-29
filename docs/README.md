@@ -10,6 +10,8 @@ Veille IA (« AI Technical Watch ») génère chaque jour une veille technique s
 | [API.md](API.md) | Les 28 endpoints HTTP, authentification, codes d'erreur | Développeurs, intégrateurs (cron) |
 | [CONFIGURATION.md](CONFIGURATION.md) | Toutes les variables d'environnement, défauts et effets | Développeurs, exploitation |
 | [FONCTIONNEL.md](FONCTIONNEL.md) | Les vues de l'application, les cas d'usage, la structure d'un rapport | Utilisateurs, product owner |
+| [RECETTE.md](RECETTE.md) | Validation d'une version avant mise en production : environnement, contrôles automatiques, cas fonctionnels, procès-verbal | Recetteurs, développeurs |
+| [PRODUCTION.md](PRODUCTION.md) | Production sur le NAS : architecture Cloudflare / Traefik, installation, mise en production, vérification, crons, sauvegarde, retour arrière | Exploitation |
 | [EXPLOITATION.md](EXPLOITATION.md) | Lancement local, conteneurs, cron quotidien, tests, dépannage | Exploitation, développeurs |
 
 ## Démarrage rapide
